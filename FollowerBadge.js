@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 用户关注标签
 // @namespace    https://linux.do/
-// @version      1.0.0
+// @version      1.0.1
 // @description  在帖子中显示用户关注标签（互关/关注/粉丝）
 // @author       ChiGamma
 // @match        https://linux.do/t/*
@@ -33,7 +33,7 @@
     const injectStyles = () => {
         const style = document.createElement('style');
         style.textContent = `
-            .${CONFIG.BADGE_CLASS} { display: inline-flex; align-items: center; justify-content: center; position: relative; min-width: 36px; height: 22px; line-height: 20px; padding: 0 8px; margin-left: 8px; vertical-align: middle; color: rgba(255,255,255,.95); font-size: 14px !important; font-weight: 600; letter-spacing: .3px; text-shadow: 0 1px 1px rgba(0,0,0,.15); border-radius: 3px; border: 1px solid rgba(0,0,0,.12); box-sizing: border-box; box-shadow: 0 1px 2px rgba(0,0,0,.08), inset 0 1px 0 rgba(255,255,255,.15); transition: all .2s cubic-bezier(.25,.46,.45,.94); overflow: hidden; z-index: 1; }
+            .${CONFIG.BADGE_CLASS} { display: inline-flex; align-items: center; justify-content: center; order: 1; position: relative; min-width: 36px; height: 22px; line-height: 20px; padding: 0 8px; margin-left: 8px; vertical-align: middle; color: rgba(255,255,255,.95); font-size: 14px !important; font-weight: 600; letter-spacing: .3px; text-shadow: 0 1px 1px rgba(0,0,0,.15); border-radius: 3px; border: 1px solid rgba(0,0,0,.12); box-sizing: border-box; box-shadow: 0 1px 2px rgba(0,0,0,.08), inset 0 1px 0 rgba(255,255,255,.15); transition: all .2s cubic-bezier(.25,.46,.45,.94); overflow: hidden; z-index: 1; }
             .${CONFIG.BADGE_CLASS}::before { content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 50%; background: linear-gradient(to bottom, rgba(255,255,255,.12) 0, rgba(255,255,255,0) 100%); z-index: -1; }
             .${CONFIG.BADGE_CLASS}::after { content: ""; position: absolute; top: -50%; left: -100%; width: 40%; height: 200%; background: linear-gradient(to right, rgba(255,255,255,0) 0, rgba(255,255,255,.3) 50%, rgba(255,255,255,0) 100%); transform: rotate(25deg); z-index: 2; opacity: 0; transition: all 1.2s ease-in-out; }
             .${CONFIG.BADGE_CLASS}:hover { transform: translateY(-1px) scale(1.03); box-shadow: 0 2px 4px rgba(0,0,0,.12), inset 0 1px 0 rgba(255,255,255,.25); color: #fff; background-image: linear-gradient(135deg, rgba(255,255,255,.15) 0, rgba(255,255,255,.08) 50%, rgba(0,0,0,.08) 51%, rgba(0,0,0,.15) 100%); }
@@ -44,6 +44,7 @@
             @media (prefers-color-scheme: dark) { .${CONFIG.BADGE_CLASS} { text-shadow: 0 1px 2px rgba(0,0,0,.25); box-shadow: 0 1px 3px rgba(0,0,0,.15), inset 0 1px 0 rgba(255,255,255,.1); } }
             @keyframes badgeFadeIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
             .${CONFIG.BADGE_CLASS} { animation: badgeFadeIn .3s ease-out forwards; }
+            @media screen and (max-width: 768px) { .${CONFIG.BADGE_CLASS} { font-size: 10px !important; height: 18px; line-height: 16px; padding: 0 8px; margin-left: 8px; } }
         `;
         document.head.appendChild(style);
     };
@@ -204,45 +205,40 @@
         return username.startsWith('@') ? username.substring(1) : username;
     };
 
-    const processPost = (post, following, followers, currentUser) => {
-        if (post.hasAttribute(CONFIG.PROCESSED_ATTR)) return;
+    const processPost = (following, followers, currentUser) => {
+        // Iterate through all posts
+        document.querySelectorAll('.post-stream .topic-post').forEach(post => {
+            // support desktop and mobile selectors
+            const namesContainer = post.querySelector('.onscreen-post>.row>.topic-avatar+.topic-body .names') ||
+                                   post.querySelector('.names');
+            if (!namesContainer || namesContainer.querySelector(`.${CONFIG.BADGE_CLASS}`)) return;
 
-        const containers = post.querySelectorAll('.names, .user-card-names');
-
-        containers.forEach(container => {
-            if (container.hasAttribute(CONFIG.PROCESSED_ATTR)) return;
-            container.setAttribute(CONFIG.PROCESSED_ATTR, 'true');
-
-            const link = container.querySelector('span.username a, .first a, .full-name a');
+            const link = namesContainer.querySelector('.first a') ||
+                         namesContainer.querySelector('span.username a') ||
+                         namesContainer.querySelector('.full-name a');
             if (!link) return;
-
             const username = extractUsername(link);
             if (!username || username.toLowerCase() === currentUser.toLowerCase()) return;
-
             const relation = getRelationType(username, following, followers);
-            if (!relation || container.querySelector(`.${CONFIG.BADGE_CLASS}`)) return;
+            if (!relation) return;
 
             const badge = createBadge(relation);
-            const ownerBadge = container.querySelector('.topic-owner-badge');
+            const ownerBadge = namesContainer.querySelector('.topic-owner-badge');
+            const firstNameSpan = namesContainer.querySelector('.first.full-name');
 
             if (ownerBadge) {
                 ownerBadge.after(badge);
+            } else if (firstNameSpan) {
+                firstNameSpan.after(badge);
             } else {
-                container.appendChild(badge);
+                const nameWrapper = link.closest('.first, .full-name, span.username');
+                if (nameWrapper) {
+                    nameWrapper.after(badge);
+                } else {
+                    namesContainer.appendChild(badge);
+                }
             }
         });
-
-        post.setAttribute(CONFIG.PROCESSED_ATTR, 'true');
-    };
-
-    const processAllPosts = (following, followers, currentUser) => {
-        // Process topic posts
-        document.querySelectorAll('.topic-post, .topic-body, article[data-post-id]')
-            .forEach(post => processPost(post, following, followers, currentUser));
-
-        // Process user cards
-        document.querySelectorAll('.user-card, .user-card-avatar')
-            .forEach(card => processPost(card, following, followers, currentUser));
     };
 
     // ==================== Observer ====================
@@ -254,7 +250,7 @@
         const observer = new MutationObserver((mutations) => {
             if (mutations.some(m => m.addedNodes.length > 0)) {
                 requestAnimationFrame(() => {
-                    processAllPosts(following, followers, currentUser);
+                    processPost(following, followers, currentUser);
                 });
             }
         });
@@ -281,7 +277,7 @@
         }
 
         const { following, followers } = cache;
-        processAllPosts(following, followers, currentUser);
+        processPost(following, followers, currentUser);
         setupObserver(following, followers, currentUser);
     };
 
