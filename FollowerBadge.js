@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         LinuxDo 用户关注标签
 // @namespace    https://linux.do/
-// @version      1.0.1
-// @description  在帖子中显示用户关注标签（互关/关注/粉丝）
+// @version      1.1.0
+// @description  在帖子中显示用户关注标签（互关/关注/粉丝），支持实时更新
 // @author       ChiGamma
 // @match        https://linux.do/t/*
 // @grant        GM_setValue
@@ -25,7 +25,6 @@
         PROCESSED_ATTR: 'data-relation-processed'
     };
 
-    // Only run on topic pages (/t/xxx/123)
     if (!/\/t\/.*?\/\d+/.test(window.location.pathname)) return;
 
     // ==================== Styles ====================
@@ -49,23 +48,20 @@
         document.head.appendChild(style);
     };
 
-    // ==================== Get Current User ====================
+    // ==================== User & Cache ====================
     const getCurrentUser = () => {
         try {
             const preloaded = document.getElementById('data-preloaded');
             if (preloaded) {
                 const data = JSON.parse(preloaded.dataset.preloaded);
                 if (data.currentUser) {
-                    const userData = JSON.parse(data.currentUser);
-                    return userData.username;
+                    return JSON.parse(data.currentUser).username;
                 }
             }
         } catch (e) {}
-
         return null;
     };
 
-    // ==================== Cache Management ====================
     const isCacheValid = () => {
         const timestamp = GM_getValue(CONFIG.CACHE_KEY_TIMESTAMP, 0);
         return (Date.now() - timestamp) < CONFIG.CACHE_DURATION;
@@ -89,12 +85,11 @@
         GM_setValue(CONFIG.CACHE_KEY_FOLLOWING, []);
         GM_setValue(CONFIG.CACHE_KEY_FOLLOWERS, []);
         GM_setValue(CONFIG.CACHE_KEY_TIMESTAMP, 0);
-        // alert('Cache cleared. Refresh to fetch new data.');
     };
 
-    GM_registerMenuCommand('🗑️ 清除关系缓存', clearCache);
+    GM_registerMenuCommand('🗑️ 清除缓存', clearCache);
 
-    // ==================== API Requests ====================
+    // ==================== API ====================
     const fetchUserList = async (url) => {
         try {
             const response = await fetch(url, {
@@ -127,8 +122,6 @@
         while (offset < 5000) {
             try {
                 const data = await fetchUserList(`${baseUrl}?offset=${offset}&limit=${limit}`);
-
-                // Handle different response formats
                 const userList = Array.isArray(data) ? data :
                     (data.users || data.following_users || data.follower_users ||
                      data.following || data.followers || []);
@@ -136,7 +129,6 @@
                 if (userList.length === 0) break;
 
                 userList.forEach(item => {
-                    // Handle both {username: "x"} and {user: {username: "x"}}
                     const username = item.username || item.user?.username;
                     if (username) users.add(username.toLowerCase());
                 });
@@ -144,7 +136,6 @@
                 if (userList.length < limit) break;
                 offset += limit;
             } catch (e) {
-                console.error('[FollowerBadge] Fetch error:', e);
                 break;
             }
         }
@@ -153,23 +144,17 @@
     };
 
     const fetchRelationships = async (username) => {
-        try {
-            const [following, followers] = await Promise.all([
-                fetchAllPages(`https://linux.do/u/${username}/follow/following.json`),
-                fetchAllPages(`https://linux.do/u/${username}/follow/followers.json`)
-            ]);
+        const [following, followers] = await Promise.all([
+            fetchAllPages(`https://linux.do/u/${username}/follow/following.json`),
+            fetchAllPages(`https://linux.do/u/${username}/follow/followers.json`)
+        ]);
 
-            setCache(following, followers);
-            console.log(`[FollowerBadge] Cached ${following.size} following, ${followers.size} followers`);
-
-            return { following, followers };
-        } catch (e) {
-            console.error('[FollowerBadge] Failed to fetch relationships:', e);
-            return null;
-        }
+        setCache(following, followers);
+        console.log(`[FollowerBadge] Cached ${following.size} following, ${followers.size} followers`);
+        return { following, followers };
     };
 
-    // ==================== Badge Processing ====================
+    // ==================== Badge ====================
     const getRelationType = (username, following, followers) => {
         const lower = username.toLowerCase();
         const isFollowing = following.has(lower);
@@ -194,21 +179,17 @@
     };
 
     const extractUsername = (link) => {
-        // Extract from URL (handles display name != username)
         try {
             const parts = new URL(link.href).pathname.split('/');
             if (parts.length >= 3 && parts[1] === 'u') return parts[2];
         } catch (e) {}
 
-        // Fallback to text
         let username = link.textContent.trim();
         return username.startsWith('@') ? username.substring(1) : username;
     };
 
     const processPost = (following, followers, currentUser) => {
-        // Iterate through all posts
         document.querySelectorAll('.post-stream .topic-post').forEach(post => {
-            // support desktop and mobile selectors
             const namesContainer = post.querySelector('.onscreen-post>.row>.topic-avatar+.topic-body .names') ||
                                    post.querySelector('.names');
             if (!namesContainer || namesContainer.querySelector(`.${CONFIG.BADGE_CLASS}`)) return;
@@ -217,8 +198,10 @@
                          namesContainer.querySelector('span.username a') ||
                          namesContainer.querySelector('.full-name a');
             if (!link) return;
+
             const username = extractUsername(link);
             if (!username || username.toLowerCase() === currentUser.toLowerCase()) return;
+
             const relation = getRelationType(username, following, followers);
             if (!relation) return;
 
@@ -241,8 +224,117 @@
         });
     };
 
+    // ==================== Shared State ====================
+    let followingSet = new Set();
+    let followersSet = new Set();
+    let currentUsername = null;
+
+    // ==================== Network Hook ====================
+    const setupNetworkHook = () => {
+        const handleRequest = (method, url) => {
+            if (!url || typeof url !== 'string') return;
+
+            const upMethod = method ? method.toUpperCase() : 'GET';
+            const match = url.match(/\/follow\/([^\/\?]+)\.json/);
+
+            if (match) {
+                const targetUser = match[1].toLowerCase();
+
+                if (upMethod === 'PUT' || upMethod === 'POST') {
+                    followingSet.add(targetUser);
+                    updateCacheFromSets();
+                    refreshBadgesForUser(targetUser);
+                } else if (upMethod === 'DELETE') {
+                    followingSet.delete(targetUser);
+                    updateCacheFromSets();
+                    refreshBadgesForUser(targetUser);
+                }
+            }
+        };
+
+        // --- Hook window.fetch ---
+        const originalFetch = window.fetch;
+        window.fetch = async function(input, init) {
+            const response = await originalFetch.apply(this, arguments);
+
+            if (response.ok) {
+                try {
+                    let url = input instanceof Request ? input.url : input;
+                    let method = init?.method || (input instanceof Request ? input.method : 'GET');
+                    handleRequest(method, url);
+                } catch (e) {}
+            }
+            return response;
+        };
+
+        // --- Hook XMLHttpRequest ---
+        const originalOpen = XMLHttpRequest.prototype.open;
+        const originalSend = XMLHttpRequest.prototype.send;
+
+        XMLHttpRequest.prototype.open = function(method, url) {
+            this._hook_method = method;
+            this._hook_url = url;
+            return originalOpen.apply(this, arguments);
+        };
+
+        XMLHttpRequest.prototype.send = function() {
+            this.addEventListener('load', function() {
+                if (this.status >= 200 && this.status < 300) {
+                    handleRequest(this._hook_method, this._hook_url);
+                }
+            });
+            return originalSend.apply(this, arguments);
+        };
+    };
+
+    const updateCacheFromSets = () => {
+        GM_setValue(CONFIG.CACHE_KEY_FOLLOWING, Array.from(followingSet));
+        GM_setValue(CONFIG.CACHE_KEY_TIMESTAMP, Date.now());
+    };
+
+    const refreshBadgesForUser = (targetUser) => {
+        const lowerTarget = targetUser.toLowerCase();
+
+        document.querySelectorAll('.post-stream .topic-post').forEach(post => {
+            const namesContainer = post.querySelector('.onscreen-post>.row>.topic-avatar+.topic-body .names') ||
+                                   post.querySelector('.names');
+            if (!namesContainer) return;
+
+            const link = namesContainer.querySelector('.first a') ||
+                         namesContainer.querySelector('span.username a') ||
+                         namesContainer.querySelector('.full-name a');
+            if (!link) return;
+
+            const username = extractUsername(link);
+            if (!username || username.toLowerCase() !== lowerTarget) return;
+
+            const existingBadge = namesContainer.querySelector(`.${CONFIG.BADGE_CLASS}`);
+            if (existingBadge) existingBadge.remove();
+
+            const relation = getRelationType(username, followingSet, followersSet);
+            if (!relation) return;
+
+            const badge = createBadge(relation);
+            const ownerBadge = namesContainer.querySelector('.topic-owner-badge');
+            const firstNameSpan = namesContainer.querySelector('.first.full-name');
+
+            if (ownerBadge) {
+                ownerBadge.after(badge);
+            } else if (firstNameSpan) {
+                firstNameSpan.after(badge);
+            } else {
+                const nameWrapper = link.closest('.first, .full-name, span.username');
+                if (nameWrapper) {
+                    nameWrapper.after(badge);
+                } else {
+                    namesContainer.appendChild(badge);
+                }
+            }
+        });
+    };
+
     // ==================== Observer ====================
-    const setupObserver = (following, followers, currentUser) => {
+    const setupObserver = () => {
         const target = document.querySelector('#main-outlet') ||
                        document.querySelector('.post-stream') ||
                        document.body;
@@ -250,7 +342,7 @@
         const observer = new MutationObserver((mutations) => {
             if (mutations.some(m => m.addedNodes.length > 0)) {
                 requestAnimationFrame(() => {
-                    processPost(following, followers, currentUser);
+                    processPost(followingSet, followersSet, currentUsername);
                 });
             }
         });
@@ -260,14 +352,16 @@
 
     // ==================== Main ====================
     const main = async () => {
-        const currentUser = getCurrentUser();
-        if (!currentUser) { return; }
+        currentUsername = getCurrentUser();
+        if (!currentUsername) return;
+
         injectStyles();
+        setupNetworkHook();
 
         let cache = getCache();
         if (!cache) {
             console.log('[FollowerBadge] Fetching relationships...');
-            cache = await fetchRelationships(currentUser);
+            cache = await fetchRelationships(currentUsername);
             if (!cache) {
                 console.error('[FollowerBadge] Failed to fetch data');
                 return;
@@ -276,9 +370,11 @@
             console.log('[FollowerBadge] Using cached data.');
         }
 
-        const { following, followers } = cache;
-        processPost(following, followers, currentUser);
-        setupObserver(following, followers, currentUser);
+        followingSet = cache.following;
+        followersSet = cache.followers;
+
+        processPost(followingSet, followersSet, currentUsername);
+        setupObserver();
     };
 
     if (document.readyState === 'complete') {
