@@ -4,6 +4,7 @@
 // @version      1.1.0
 // @description  在帖子中显示用户关注标签（互关/关注/粉丝），支持实时更新
 // @author       ChiGamma
+// @license      Fair License
 // @match        https://linux.do/t/*
 // @grant        GM_setValue
 // @grant        GM_getValue
