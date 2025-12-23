@@ -156,7 +156,7 @@
         .sb-list::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
 
         /* 卡片 */
-        .sb-card { display: flex; flex-direction: column; gap: 2px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 6px; margin-bottom: 8px; text-decoration: none; color: inherit; transition: 0.2s; position: relative; overflow: hidden; }
+        .sb-card { display: flex; flex-direction: column; gap: 3px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 8px 6px 8px; margin-bottom: 8px; text-decoration: none; color: inherit; transition: 0.2s; position: relative; overflow: hidden; }
         .sb-card:hover { transform: translateX(4px); background: rgba(255,255,255,0.06); border-color: #00d4ff; }
 
         .sb-card-head { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #666; }
@@ -170,6 +170,10 @@
         .sb-badge { font-size: 9px; padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.1); }
         .sb-action { font-size: 10px; color: #555; }
         .sb-timestr { font-size: 10px; color: #555; }
+
+        /* Action icons */
+        .sb-user-box .svg-icon, .dm-user .svg-icon { width: 12px; height: 12px; fill: #888; vertical-align: middle; margin: 0 4px; }
+        .sb-user-box .action-emoji, .dm-user .action-emoji { width: 14px; height: 14px; vertical-align: middle; margin: 0 4px; }
 
         /* 弹幕 (在 Shadow DOM 内) */
         .dm-container { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; overflow: hidden; z-index: 10; }
@@ -193,9 +197,66 @@
 
     async function fetchUser(username) {
         try {
-            const url = `${CONFIG.HOST}/user_actions.json?offset=0&limit=${CONFIG.LOG_LIMIT_PER_USER}&username=${username}&filter=1,4,5`;
-            const json = await safeFetch(url);
-            return json.user_actions || [];
+            // Fetch user_actions
+            const url1 = `${CONFIG.HOST}/user_actions.json?offset=0&limit=${CONFIG.LOG_LIMIT_PER_USER}&username=${username}&filter=1,4,5`;
+            const json = await safeFetch(url1);
+
+            // Process user_actions: swap fields for type 1 (likes)
+            const actions = (json.user_actions || []).map(action => {
+                if (action.action_type === 1) {
+                    // For likes: swap user and acting_user fields
+                    return {
+                        ...action,
+                        username: action.acting_username,
+                        name: action.acting_name,
+                        user_id: action.acting_user_id,
+                        acting_username: action.username,
+                        acting_name: action.name,
+                        acting_user_id: action.user_id,
+                        avatar_template: action.acting_avatar_template
+                    };
+                }
+                // Type 4 (new topic) and 5 (reply): keep as-is
+                return action;
+            });
+
+            // Fetch reactions
+            // NOTE: the limit seems to be fixed at 20
+            const url2 = `${CONFIG.HOST}/discourse-reactions/posts/reactions.json?offset=0&limit=${CONFIG.LOG_LIMIT_PER_USER}&username=${username}`;
+            const json2 = await safeFetch(url2);
+
+            // Transform reactions to match user_actions format
+            const reactions = (json2 || []).map(r => ({
+                // Core identifiers
+                id: r.id,
+                post_id: r.post_id,
+                created_at: r.created_at,
+                // User who made the reaction (acting user)
+                username: r.user?.username || '',
+                name: r.user?.name || '',
+                user_id: r.user_id,
+                avatar_template: r.user?.avatar_template || '',
+                // Post author (target of the reaction)
+                acting_username: r.post?.user?.username || r.post?.username || '',
+                acting_name: r.post?.user?.name || r.post?.name || '',
+                acting_user_id: r.post?.user_id || '',
+                acting_avatar_template: r.post?.user?.avatar_template || r.post?.avatar_template || '',
+                // Post/topic info
+                topic_id: r.post?.topic_id,
+                post_number: r.post?.post_number,
+                title: r.post?.topic_title || r.post?.topic?.title || '',
+                excerpt: r.post?.excerpt || '',
+                category_id: r.post?.category_id,
+                // Reaction-specific: use reaction_value as action indicator
+                action_type: r.reaction?.reaction_value || 'reaction',
+                reaction_value: r.reaction?.reaction_value
+            }));
+
+            // Merge, sort by date, and return only most recent entries
+            const merged = [...actions, ...reactions]
+                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+                .slice(0, CONFIG.LOG_LIMIT_PER_USER);
+            return merged;
         } catch (e) {
             log(`Network Err ${username}: ${e.message}`, 'error');
             return [];
@@ -241,6 +302,37 @@
         return src;
     }
 
+    // --- Unified Action Formatting ---
+
+    function getActionIcon(actionType) {
+        const ACTION_ICONS = {
+            reply: '<svg class="fa d-icon d-icon-reply svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M8.309 189.836L184.313 37.851C199.719 24.546 224 35.347 224 56.015v80.053c160.629 1.839 288 34.032 288 186.258 0 61.441-39.581 122.309-83.333 154.132-13.653 9.931-33.111-2.533-28.077-18.631 45.344-145.012-21.507-183.51-176.59-185.742V360c0 20.7-24.3 31.453-39.687 18.164l-176.004-152c-11.071-9.562-11.086-26.753 0-36.328z"/></svg>',
+            post: '<svg class="fa d-icon d-icon-pencil svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M497.9 142.1l-46.1 46.1c-4.7 4.7-12.3 4.7-17 0l-111-111c-4.7-4.7-4.7-12.3 0-17l46.1-46.1c18.7-18.7 49.1-18.7 67.9 0l60.1 60.1c18.8 18.7 18.8 49.1 0 67.9zM284.2 99.8L21.6 362.4.4 483.9c-2.9 16.4 11.4 30.6 27.8 27.8l121.5-21.3 262.6-262.6c4.7-4.7 4.7-12.3 0-17l-111-111c-4.8-4.7-12.4-4.7-17.1 0zM88 424h48v36.3l-64.5 11.3-31.1-31.1L51.7 376H88v48z"/></svg>',
+            like: '<svg class="fa d-icon d-icon-d-heart svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><path d="M305 151.1L320 171.8L335 151.1C360 116.5 400.2 96 442.9 96C516.4 96 576 155.6 576 229.1L576 231.7C576 343.9 436.1 474.2 363.1 529.9C350.7 539.3 335.5 544 320 544C304.5 544 289.2 539.4 276.9 529.9C203.9 474.2 64 343.9 64 231.7L64 229.1C64 155.6 123.6 96 197.1 96C239.8 96 280 116.5 305 151.1z"/></svg>',
+        };
+
+        if (actionType === 5) return ACTION_ICONS.reply;
+        if (actionType === 4) return ACTION_ICONS.post;
+        if (actionType === 1) return ACTION_ICONS.like;
+        // For reactions (action_type is the reaction_value string like "laughing", "hugs")
+        if (typeof actionType === 'string') {
+            return `<img src="${CONFIG.HOST}/images/emoji/twemoji/${actionType}.png?v=15" class="action-emoji" alt=":${actionType}:">`;
+        }
+        return ACTION_ICONS.reply; // fallback
+    }
+
+    function formatActionInfo(action) {
+        const icon = getActionIcon(action.action_type);
+        const user = action.username || '';
+        const actingUser = action.acting_username || '';
+
+        // Format: {user} {icon} {acting_user (if available and different)}
+        if (actingUser && actingUser !== user) {
+            return { user, icon, actingUser, html: `${user} ${icon} ${actingUser}` };
+        }
+        return { user, icon, actingUser: null, html: `${user} ${icon}` };
+    }
+
     // --- Shadow DOM 操作 ---
     let shadowRoot;
 
@@ -279,10 +371,11 @@
                 item.style.animationDuration = `${10 + Math.random() * 5}s`;
                 item.onclick = () => window.open(link, '_blank');
 
+                const actionInfo = formatActionInfo(action);
                 item.innerHTML = `
                     <img src="${avatar}" class="dm-avatar">
                     <div class="dm-info">
-                        <div class="dm-user">${action.username} ${action.action_type===1?'赞':action.action_type===4?'发布':'回复'}</div>
+                        <div class="dm-user">${actionInfo.html}</div>
                         <div class="dm-text">${action.title}</div>
                         ${excerpt ? `<div class="dm-sub">${excerpt}</div>` : ''}
                     </div>
@@ -522,14 +615,14 @@
             const imgUrl = extractImg(item.excerpt);
             const link = `${CONFIG.HOST}/t/${item.topic_id}/${item.post_number}`;
 
+            const actionInfo = formatActionInfo(item);
             return `
                 <a href="${link}" target="_blank" class="sb-card">
                     <div class="sb-card-head">
                         <div class="sb-user-box">
                             <img src="${avatar}" class="sb-avatar">
-                            ${item.username}
+                            ${actionInfo.html}
                         </div>
-                        <span class="sb-action">${item.action_type === 1 ? '赞' : item.action_type === 4 ? '发布' : '回复'}</span>
                     </div>
                     <div class="sb-card-title">${item.title}</div>
                     ${excerpt ? `<div class="sb-card-excerpt">${excerpt}</div>` : ''}
