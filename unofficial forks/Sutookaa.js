@@ -22,19 +22,22 @@
 
     // --- 配置 ---
     const CONFIG = {
-        MAX_USERS: 20,
+        MAX_USERS: 5,
         SIDEBAR_WIDTH: '300px',
-        REFRESH_INTERVAL_MS: 3 * 60 * 1000,
+        REFRESH_INTERVAL_MS: 1 * 60 * 1000,
         LOG_LIMIT_PER_USER: 15,
         HOST: 'https://linux.do'
     };
 
     // --- 类别定义 ---
     const categoryColors = {
-        "前沿快讯": "#00d4ff", "开发调优": "#00ff88", "搞七捻三": "#ffd700",
-        "深海幽域": "#c77dff", "福利羊毛": "#ff6b6b", "资源荟萃": "#4dabf7",
-        "跳蚤市场": "#ff66c4", "运营反馈": "#adb5bd", "default": "#8b949e",
-        "人工智能": "#00d4ff", "软件分享": "#4dabf7"
+        '开发调优': '#32c3c3', '国产替代': '#D12C25', '资源荟萃': '#12A89D',
+        '网盘资源': '#16b176', '文档共建': '#9cb6c4', '跳蚤市场': '#ED207B',
+        '非我莫属': '#a8c6fe', '读书成诗': '#e0d900', '扬帆起航': '#ff9838',
+        '前沿快讯': '#BB8FCE', '网络记忆': '#F7941D', '福利羊毛': '#E45735',
+        '搞七捻三': '#3AB54A', '社区孵化': '#ffbb00', '运营反馈': '#808281',
+        '深海幽域': '#45B7D1', '未分区':   '#9e9e9e',
+        '人工智能': '#00d4ff', '软件分享': '#4dabf7'
     };
 
     const categoryMap = new Map();
@@ -109,49 +112,14 @@
 
     // --- 样式 (注入 Shadow DOM) ---
     const css = `
-        :host {
-            all: initial; /* 重置所有继承样式 */
-            font-family: system-ui, -apple-system, sans-serif;
-            font-size: 14px;
-            z-index: 2147483647; /* Max Z-Index */
-            position: fixed;
-            top: 0; left: 0;
-            pointer-events: none; /* 让容器穿透点击，除了内部元素 */
-            width: 100vw; height: 100vh;
-        }
+        :host { all: initial; font-family: system-ui, -apple-system, sans-serif; font-size: 14px; z-index: 2147483647; position: fixed; top: 0; left: 0; pointer-events: none; width: 100vw; height: 100vh; }
 
         /* 侧边栏容器 */
-        #ld-sidebar {
-            position: fixed; top: 0; left: 0;
-            width: ${CONFIG.SIDEBAR_WIDTH}; height: 100vh;
-            background: rgba(18, 18, 18, 0.95);
-            backdrop-filter: blur(10px);
-            border-right: 1px solid rgba(255, 255, 255, 0.1);
-            display: flex; flex-direction: column;
-            color: #eee;
-            box-shadow: 5px 0 25px rgba(0,0,0,0.5);
-            transition: transform 0.3s cubic-bezier(0.2, 0, 0, 1);
-            pointer-events: auto; /* 恢复点击 */
-        }
-
+        #ld-sidebar { position: fixed; top: 0; left: 0; width: ${CONFIG.SIDEBAR_WIDTH}; height: 100vh; background: rgba(18, 18, 18, 0.95); backdrop-filter: blur(10px); border-right: 1px solid rgba(255, 255, 255, 0.1); display: flex; flex-direction: column; color: #eee; box-shadow: 5px 0 25px rgba(0,0,0,0.5); transition: transform 0.3s cubic-bezier(0.2, 0, 0, 1); pointer-events: auto; }
         #ld-sidebar.collapsed { transform: translateX(-${CONFIG.SIDEBAR_WIDTH}); }
 
         /* 悬浮开关 (小球) */
-        #ld-toggle-ball {
-            position: absolute;
-            right: -24px; top: 50vh;
-            width: 24px; height: 48px;
-            background: #222;
-            border: 1px solid rgba(255,255,255,0.2);
-            border-left: none;
-            border-radius: 0 100px 100px 0;
-            cursor: pointer;
-            display: flex; align-items: center; justify-content: center;
-            color: #00d4ff;
-            box-shadow: 2px 0 10px rgba(0,0,0,0.3);
-            pointer-events: auto;
-            transition: 0.2s;
-        }
+        #ld-toggle-ball { position: absolute; right: -24px; top: 50vh; width: 24px; height: 48px; background: #222; border: 1px solid rgba(255,255,255,0.2); border-left: none; border-radius: 0 100px 100px 0; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #00d4ff; box-shadow: 2px 0 10px rgba(0,0,0,0.3); pointer-events: auto; transition: 0.2s; }
         #ld-toggle-ball:hover { width: 32px; background: #333; }
 
         /* 头部 */
@@ -164,86 +132,48 @@
 
         /* 工具栏 */
         .sb-tools { display: flex; gap: 6px; }
-        .sb-icon-btn {
-            background: transparent; border: none; color: #888; cursor: pointer;
-            font-size: 14px; padding: 4px; border-radius: 4px; transition: 0.2s;
-        }
+        .sb-icon-btn { background: transparent; border: none; color: #888; cursor: pointer; font-size: 14px; padding: 4px; border-radius: 4px; transition: 0.2s; }
         .sb-icon-btn:hover { color: #fff; background: rgba(255,255,255,0.1); }
         .sb-icon-btn.active { color: #00d4ff; background: rgba(0, 212, 255, 0.1); }
 
         /* 输入框 */
         .sb-input-group { display: flex; gap: 5px; margin-bottom: 10px; }
-        .sb-input {
-            flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
-            color: #fff; padding: 6px 10px; border-radius: 6px; outline: none; font-size: 12px;
-        }
+        .sb-input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 6px 10px; border-radius: 6px; outline: none; font-size: 12px; }
         .sb-input:focus { border-color: #00d4ff; }
-        .sb-btn-add {
-            background: #00d4ff; color: #000; border: none; border-radius: 6px;
-            width: 30px; cursor: pointer; font-weight: bold;
-        }
+        .sb-btn-add { background: #00d4ff; color: #000; border: none; border-radius: 6px; width: 30px; cursor: pointer; font-weight: bold; }
 
         /* 标签 */
         .sb-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-        .sb-tag {
-            font-size: 10px; padding: 3px 8px; border-radius: 10px; background: rgba(255,255,255,0.1);
-            color: #aaa; cursor: pointer; display: flex; align-items: center; gap: 4px; border: 1px solid transparent;
-        }
+        .sb-tag { font-size: 10px; padding: 3px 8px; border-radius: 10px; background: rgba(255,255,255,0.1); color: #aaa; cursor: pointer; display: flex; align-items: center; gap: 4px; border: 1px solid transparent; }
         .sb-tag:hover { background: rgba(255,255,255,0.2); color: #fff; }
         .sb-tag.active { background: rgba(0, 212, 255, 0.15); color: #00d4ff; border-color: rgba(0,212,255,0.3); }
         .sb-tag-close { font-size: 12px; line-height: 1; opacity: 0.6; }
         .sb-tag-close:hover { opacity: 1; color: #ff5555; }
 
         /* 列表区域 */
-        .sb-list {
-            flex: 1; overflow-y: auto; padding: 10px;
-            /* 针对 Shadow DOM 内的滚动条样式 */
-            scrollbar-width: thin; scrollbar-color: #444 transparent;
-        }
+        .sb-list { flex: 1; overflow-y: auto; padding: 10px; scrollbar-width: thin; scrollbar-color: #444 transparent; }
         .sb-list::-webkit-scrollbar { width: 4px; }
         .sb-list::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
 
         /* 卡片 */
-        .sb-card {
-            display: flex; flex-direction: column; gap: 6px;
-            background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 8px; padding: 12px; margin-bottom: 10px;
-            text-decoration: none; color: inherit; transition: 0.2s;
-            position: relative; overflow: hidden;
-        }
+        .sb-card { display: flex; flex-direction: column; gap: 2px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 6px; margin-bottom: 8px; text-decoration: none; color: inherit; transition: 0.2s; position: relative; overflow: hidden; }
         .sb-card:hover { transform: translateX(4px); background: rgba(255,255,255,0.06); border-color: #00d4ff; }
 
         .sb-card-head { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #666; }
-        .sb-user-box { display: flex; align-items: center; gap: 6px; color: #ccc; font-weight: 600; }
+        .sb-user-box { display: flex; align-items: center; gap: 4px; color: #ccc; font-weight: 600; }
         .sb-avatar { width: 18px; height: 18px; border-radius: 50%; background: #333; object-fit: cover; }
 
-        .sb-card-title { font-size: 13px; font-weight: 600; color: #eee; line-height: 1.4; }
-        .sb-card-excerpt {
-            font-size: 11px; color: #999; line-height: 1.5;
-            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-            border-left: 2px solid #333; padding-left: 6px; margin-top: 2px;
-        }
+        .sb-card-title { font-size: 12px; font-weight: 600; color: #eee; line-height: 1.4; }
+        .sb-card-excerpt { font-size: 10px; color: #999; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; border-left: 2px solid #333; padding-left: 6px; margin-top: 2px; }
         .sb-card-img { width: 100%; height: 100px; object-fit: cover; border-radius: 4px; margin-top: 4px; border: 1px solid #333; }
-
-        .sb-card-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
+        .sb-card-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
         .sb-badge { font-size: 9px; padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.1); }
         .sb-action { font-size: 10px; color: #555; }
+        .sb-timestr { font-size: 10px; color: #555; }
 
         /* 弹幕 (在 Shadow DOM 内) */
-        .dm-container {
-            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            pointer-events: none; overflow: hidden; z-index: 10;
-        }
-        .dm-item {
-            position: absolute; left: 100vw;
-            display: flex; gap: 10px; align-items: flex-start;
-            background: rgba(30, 30, 30, 0.9); border: 1px solid #444;
-            padding: 10px 15px; border-radius: 30px;
-            color: #fff; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-            max-width: 500px; min-width: 250px;
-            pointer-events: auto; cursor: pointer;
-            will-change: transform; animation: dm-fly 12s linear forwards;
-        }
+        .dm-container { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; overflow: hidden; z-index: 10; }
+        .dm-item { position: absolute; left: 100vw; display: flex; gap: 10px; align-items: flex-start; background: rgba(30, 30, 30, 0.9); border: 1px solid #444; padding: 10px 15px; border-radius: 30px; color: #fff; box-shadow: 0 4px 15px rgba(0,0,0,0.5); max-width: 500px; min-width: 250px; pointer-events: auto; cursor: pointer; will-change: transform; animation: dm-fly 12s linear forwards; }
         .dm-item:hover { z-index: 20; background: #222; border-color: #00d4ff; animation-play-state: paused; }
         .dm-avatar { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; }
         .dm-info { display: flex; flex-direction: column; overflow: hidden; }
@@ -255,10 +185,7 @@
         @keyframes dm-fly { from { transform: translateX(0); } to { transform: translateX(-120vw); } }
 
         /* 调试日志 */
-        .sb-console {
-            height: 80px; background: #000; border-top: 1px solid #333;
-            padding: 5px; font-family: monospace; font-size: 10px; overflow-y: auto; color: #666;
-        }
+        .sb-console { height: 20px; background: #000; border-top: 1px solid #333; padding: 5px; font-family: monospace; font-size: 10px; overflow-y: auto; color: #666; }
         .log-ok { color: #0f0; } .log-err { color: #f55; }
     `;
 
@@ -266,7 +193,7 @@
 
     async function fetchUser(username) {
         try {
-            const url = `${CONFIG.HOST}/user_actions.json?offset=0&limit=${CONFIG.LOG_LIMIT_PER_USER}&username=${username}&filter=4,5`;
+            const url = `${CONFIG.HOST}/user_actions.json?offset=0&limit=${CONFIG.LOG_LIMIT_PER_USER}&username=${username}&filter=1,4,5`;
             const json = await safeFetch(url);
             return json.user_actions || [];
         } catch (e) {
@@ -355,7 +282,7 @@
                 item.innerHTML = `
                     <img src="${avatar}" class="dm-avatar">
                     <div class="dm-info">
-                        <div class="dm-user">${action.username} ${action.action_type===4?'发布':'回复'}</div>
+                        <div class="dm-user">${action.username} ${action.action_type===1?'赞':action.action_type===4?'发布':'回复'}</div>
                         <div class="dm-text">${action.title}</div>
                         ${excerpt ? `<div class="dm-sub">${excerpt}</div>` : ''}
                     </div>
@@ -463,7 +390,7 @@
                     <div id="sb-tags" class="sb-tags"></div>
                 </div>
                 <div id="sb-list" class="sb-list"></div>
-                <div id="sb-console" class="sb-console"></div>
+                <!-- <div id="sb-console" class="sb-console"></div> -->
             </div>
         `;
         shadowRoot.appendChild(container);
@@ -524,7 +451,7 @@
         log('Seeking Engine Started.', 'success');
 
         // 初次加载
-        tick(false);
+        tick(true);
         setInterval(() => tick(false), CONFIG.REFRESH_INTERVAL_MS);
     }
 
@@ -581,7 +508,13 @@
             let avatar = "https://linux.do/uploads/default/original/3X/9/d/9dd4973138ccd78e8907865261d7b14d45a96d1c.png";
             if(item.avatar_template) avatar = CONFIG.HOST + item.avatar_template.replace("{size}", "48");
 
-            const timeStr = new Date(item.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+            const date = new Date(item.created_at);
+            const now = new Date();
+            const timeStr = date.toDateString() === now.toDateString()
+                ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+                : date.getFullYear() === now.getFullYear()
+                    ? date.toLocaleString('en-US', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+                    : date.toLocaleString('en-US', { month: 'short', day: '2-digit', year: '2-digit' });
             const catName = categoryMap.get(item.category_id) || "其他";
             const catColor = categoryColors[catName] || "#777";
 
@@ -596,14 +529,14 @@
                             <img src="${avatar}" class="sb-avatar">
                             ${item.username}
                         </div>
-                        <span>${timeStr}</span>
+                        <span class="sb-action">${item.action_type === 1 ? '赞' : item.action_type === 4 ? '发布' : '回复'}</span>
                     </div>
                     <div class="sb-card-title">${item.title}</div>
                     ${excerpt ? `<div class="sb-card-excerpt">${excerpt}</div>` : ''}
                     ${imgUrl ? `<img src="${imgUrl}" class="sb-card-img" loading="lazy">` : ''}
                     <div class="sb-card-foot">
                         <span class="sb-badge" style="color:${catColor};background:${catColor}15">${catName}</span>
-                        <span class="sb-action">${item.action_type === 4 ? '发布' : '回复'}</span>
+                        <span class="sb-timestr">${timeStr}</span>
                     </div>
                 </a>
             `;
