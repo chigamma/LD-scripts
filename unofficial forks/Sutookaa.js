@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo追觅
 // @namespace    http://tampermonkey.net/
-// @version      3.0 - fork from 2025-08-06-v21-cross-origin
+// @version      3.1 - fork from 2025-08-06-v21-cross-origin
 // @description  在任何网页上实时监控 Linux.do 活动。
 // @author       ChiGamma (fork from NullUser)
 // @match        https://linux.do/*
@@ -24,7 +24,7 @@
     const CONFIG = {
         MAX_USERS: 5,
         SIDEBAR_WIDTH: '300px',
-        REFRESH_INTERVAL_MS: 1 * 60 * 1000,
+        REFRESH_INTERVAL_MS: 20 * 1000,
         LOG_LIMIT_PER_USER: 15,
         HOST: 'https://linux.do'
     };
@@ -86,10 +86,18 @@
         enableDanmaku: saved.enableDanmaku !== false,
         data: {},
         isCollapsed: GM_getValue('ld_is_collapsed', true), // 默认收起
+        // isCollapsed: true, // 默认收起，不持久化
         isProcessing: false,
         currentFilter: 'ALL',
-        currentUser: getCurrentUser() // Current logged-in user
+        currentUser: getCurrentUser(), // Current logged-in user
+        currentUserIndex: 0, // For rotating single-user queries
+        isLeader: false // For cross-tab coordination
     };
+
+    // --- Cross-Tab BroadcastChannel ---
+    const CHANNEL_NAME = 'ld_seeking_channel';
+    const channel = new BroadcastChannel(CHANNEL_NAME);
+    let leaderCheckTimeout = null;
 
     function saveConfig() {
         const store = {
@@ -472,52 +480,166 @@
         }
     }
 
-    async function tick(force = false) {
-        if (State.isProcessing && !force) return;
-        State.isProcessing = true;
+    // Process a single user's data and handle notifications
+    async function processUser(user, isInitial = false) {
+        const actions = await fetchUser(user);
+        if (actions.length === 0) return false;
 
-        const dot = shadowRoot?.querySelector('.sb-status-dot');
-        if(dot) dot.className = 'sb-status-dot loading';
+        const latest = actions[0];
+        const latestId = getUniqueId(latest);
+        const lastSavedId = State.lastIds[user];
 
         let hasUpdates = false;
 
-        for (const user of State.users) {
-            const actions = await fetchUser(user);
-            if (actions.length > 0) {
-                const latest = actions[0];
-                const latestId = getUniqueId(latest);
-                const lastSavedId = State.lastIds[user];
-
-                if (!lastSavedId) {
-                    State.lastIds[user] = latestId;
-                    hasUpdates = true;
-                    // 初始化不弹幕，防止刷屏
-                } else if (latestId !== lastSavedId) {
-                    // 找出新消息
-                    const diff = [];
-                    for (let act of actions) {
-                        if (getUniqueId(act) === lastSavedId) break;
-                        diff.push(act);
-                    }
-                    if (diff.length > 0) {
-                        log(`User ${user} has ${diff.length} new`, 'success');
-                        diff.reverse().forEach((act, i) => setTimeout(() => sendNotification(act), i * 1000));
-                        State.lastIds[user] = latestId;
-                        hasUpdates = true;
-                    }
-                }
-                State.data[user] = actions;
+        if (!lastSavedId) {
+            State.lastIds[user] = latestId;
+            hasUpdates = true;
+            // 初始化不弹幕，防止刷屏
+        } else if (latestId !== lastSavedId && !isInitial) {
+            // 找出新消息
+            const diff = [];
+            for (let act of actions) {
+                if (getUniqueId(act) === lastSavedId) break;
+                diff.push(act);
+            }
+            if (diff.length > 0) {
+                log(`User ${user} has ${diff.length} new`, 'success');
+                diff.reverse().forEach((act, i) => setTimeout(() => {
+                    sendNotification(act);
+                    broadcastNewAction(act); // Sync danmaku to other tabs
+                }, i * 1000));
+                State.lastIds[user] = latestId;
+                hasUpdates = true;
             }
         }
+        State.data[user] = actions;
+        log(`User ${user} has ${actions.length} actions`, 'info');
+        return hasUpdates;
+    }
 
-        if (hasUpdates || force) {
-            saveConfig();
-            renderList();
+    // Full query for all users (initial load and manual refresh)
+    async function tickAll() {
+        if (!State.isLeader || State.isProcessing) return;
+        State.isProcessing = true;
+
+        const dot = shadowRoot?.querySelector('.sb-status-dot');
+        if (dot) dot.className = 'sb-status-dot loading';
+
+        let hasUpdates = false;
+        for (const user of State.users) {
+            const updated = await processUser(user, true);
+            if (updated) hasUpdates = true;
         }
 
-        if(dot) dot.className = 'sb-status-dot ok';
+        if (hasUpdates) {
+            saveConfig();
+        }
+        renderList();
+
+        // Broadcast update to other tabs
+        channel.postMessage({ type: 'data_update', data: State.data, lastIds: State.lastIds });
+
+        if (dot) dot.className = 'sb-status-dot ok';
         State.isProcessing = false;
     }
+
+    // Single user query (periodic rotation)
+    async function tickOne() {
+        if (!State.isLeader || State.isProcessing || State.users.length === 0) return;
+        State.isProcessing = true;
+
+        const dot = shadowRoot?.querySelector('.sb-status-dot');
+        if (dot) dot.className = 'sb-status-dot loading';
+
+        const user = State.users[State.currentUserIndex];
+        const hasUpdates = await processUser(user, false);
+
+        // Rotate to next user
+        State.currentUserIndex = (State.currentUserIndex + 1) % State.users.length;
+
+        if (hasUpdates) {
+            saveConfig();
+            renderList();
+            // Broadcast update to other tabs
+            channel.postMessage({ type: 'data_update', data: State.data, lastIds: State.lastIds });
+        }
+
+        if (dot) dot.className = 'sb-status-dot ok';
+        State.isProcessing = false;
+    }
+
+    // Broadcast new action for danmaku on all tabs
+    function broadcastNewAction(action) {
+        channel.postMessage({ type: 'new_action', action });
+    }
+
+    // Handle incoming broadcast messages
+    channel.onmessage = (event) => {
+        const msg = event.data;
+        switch (msg.type) {
+            case 'leader_check':
+                // Another tab is checking for leader
+                if (State.isLeader) {
+                    channel.postMessage({ type: 'leader_here' });
+                }
+                break;
+            case 'leader_here':
+                // A leader already exists, cancel our attempt
+                if (leaderCheckTimeout) {
+                    clearTimeout(leaderCheckTimeout);
+                    leaderCheckTimeout = null;
+                }
+                State.isLeader = false;
+                log('Another tab is leader, following...', 'info');
+                // Request current data from leader
+                channel.postMessage({ type: 'data_request' });
+                break;
+            case 'data_request':
+                // Follower is requesting current data
+                if (State.isLeader && Object.keys(State.data).length > 0) {
+                    channel.postMessage({ type: 'data_update', data: State.data, lastIds: State.lastIds });
+                }
+                break;
+            case 'leader_resign':
+                // Leader resigned, try to become leader (with random delay to avoid race)
+                setTimeout(() => attemptLeadership(), Math.random() * 300);
+                break;
+            case 'data_update':
+                // Sync data from leader
+                if (!State.isLeader) {
+                    State.data = msg.data;
+                    State.lastIds = msg.lastIds;
+                    renderList();
+                }
+                break;
+            case 'new_action':
+                // Show danmaku from leader's new action
+                if (!State.isLeader && State.enableDanmaku) {
+                    sendNotification(msg.action);
+                }
+                break;
+        }
+    };
+
+    // Attempt to become the leader
+    function attemptLeadership() {
+        channel.postMessage({ type: 'leader_check' });
+        leaderCheckTimeout = setTimeout(() => {
+            // No response, become leader
+            State.isLeader = true;
+            log('This tab is now the leader', 'success');
+            leaderCheckTimeout = null;
+            // Leader starts fetching data
+            tickAll();
+        }, 200);
+    }
+
+    // Resign leadership when tab closes
+    window.addEventListener('beforeunload', () => {
+        if (State.isLeader) {
+            channel.postMessage({ type: 'leader_resign' });
+        }
+    });
 
     // --- UI 构建 ---
 
@@ -559,7 +681,7 @@
                     <div id="sb-tags" class="sb-tags"></div>
                 </div>
                 <div id="sb-list" class="sb-list"></div>
-                <!-- <div id="sb-console" class="sb-console"></div> -->
+                <div id="sb-console" class="sb-console"></div>
             </div>
         `;
         shadowRoot.appendChild(container);
@@ -585,7 +707,7 @@
             saveConfig();
         };
 
-        shadowRoot.getElementById('btn-refresh').onclick = () => tick(true);
+        shadowRoot.getElementById('btn-refresh').onclick = () => tickAll();
 
         const handleAdd = async () => {
             const inp = shadowRoot.getElementById('inp-user');
@@ -603,7 +725,7 @@
             btn.innerText = '＋';
             inp.value = '';
             renderTags();
-            tick(true);
+            tickAll();
         };
 
         shadowRoot.getElementById('btn-add').onclick = handleAdd;
@@ -619,9 +741,8 @@
         renderTags();
         log('Seeking Engine Started.', 'success');
 
-        // 初次加载
-        tick(true);
-        setInterval(() => tick(false), CONFIG.REFRESH_INTERVAL_MS);
+        // 定期轮询: 每次只查询一个用户 (仅leader执行)
+        setInterval(() => tickOne(), CONFIG.REFRESH_INTERVAL_MS);
     }
 
     function removeUser(name) {
@@ -714,6 +835,7 @@
     }
 
     // 启动
+    attemptLeadership();
     createUI();
 
 })();
