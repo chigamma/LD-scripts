@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         LinuxDo追觅
 // @namespace    http://tampermonkey.net/
-// @version      2025-08-06-v21-cross-origin
-// @description  在任何网页上实时监控 Linux.do 活动。使用 Shadow DOM 隔离样式，GM_xmlhttpRequest 突破跨域限制。
-// @author       NullUser
+// @version      3.0 - fork from 2025-08-06-v21-cross-origin
+// @description  在任何网页上实时监控 Linux.do 活动。
+// @author       ChiGamma (fork from NullUser)
 // @match        https://linux.do/*
 // @connect      linux.do
 // @icon         https://linux.do/uploads/default/original/3X/9/d/9dd4973138ccd78e8907865261d7b14d45a96d1c.png
@@ -207,9 +207,14 @@
 
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
         @keyframes dm-fly { from { transform: translateX(0); } to { transform: translateX(-140vw); } }
+        @keyframes dm-pop { 0% { opacity: 1; transform: scale(1.2); } 100% { opacity: 0; transform: scale(0.8) translateY(-30px); } }
+
+        .dm-icon-pop { position: absolute; pointer-events: none; animation: dm-pop 3s ease-out forwards; }
+        .dm-icon-pop .svg-icon { width: 100px; height: 100px; fill: #fa6c8d; filter: drop-shadow(0 4px 20px rgba(250,108,141,0.6)); }
+        .dm-icon-pop .action-emoji { width: 100px; height: 100px; filter: drop-shadow(0 4px 20px rgba(255,255,255,0.4)); }
 
         /* 调试日志 */
-        .sb-console { height: 20px; background: #000; border-top: 1px solid #333; padding: 5px; font-family: monospace; font-size: 10px; overflow-y: auto; color: #666; }
+        .sb-console { height: 40px; background: #000; border-top: 1px solid #333; padding: 5px; font-family: monospace; font-size: 10px; overflow-y: auto; color: #666; }
         .log-ok { color: #0f0; } .log-err { color: #f55; }
     `;
 
@@ -420,6 +425,19 @@
         if (State.enableDanmaku && shadowRoot) {
             const layer = shadowRoot.getElementById('dm-container');
             if (layer) {
+                // Icon pop for likes/reactions
+                const isLikeOrReaction = action.action_type === 1 || typeof action.action_type === 'string';
+                if (isLikeOrReaction) {
+                    const iconPop = document.createElement('div');
+                    iconPop.className = 'dm-icon-pop';
+                    iconPop.style.left = `${10 + Math.random() * 70}vw`;
+                    iconPop.style.top = `${10 + Math.random() * 60}vh`;
+                    iconPop.innerHTML = getActionIcon(action.action_type);
+                    layer.appendChild(iconPop);
+                    setTimeout(() => iconPop.remove(), 3000);
+                }
+
+                // Regular flying danmaku
                 const item = document.createElement('div');
                 item.className = 'dm-item';
                 item.style.top = `${5 + Math.random() * 80}vh`; // 随机高度
@@ -666,8 +684,8 @@
                 : date.getFullYear() === now.getFullYear()
                     ? date.toLocaleString('en-US', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
                     : date.toLocaleString('en-US', { month: 'short', day: '2-digit', year: '2-digit' });
-            const catName = categoryMap.get(item.category_id) || "其他";
-            const catColor = categoryColors[catName] || "#777";
+            const catName = categoryMap.get(item.category_id) || "未分区";
+            const catColor = categoryColors[catName] || "#9e9e9e";
 
             const excerpt = cleanHtml(item.excerpt);
             const imgUrl = extractImg(item.excerpt);
