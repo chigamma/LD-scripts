@@ -30,6 +30,8 @@
     };
 
     // --- 类别定义 ---
+    const nameColors = ["#ffd700", "#00d4ff", "#ff6b6b", "#4d5ef7ff", "#c77dff", "#00ff88", "#f87ecaff"];
+
     const categoryColors = {
         '开发调优': '#32c3c3', '国产替代': '#D12C25', '资源荟萃': '#12A89D',
         '网盘资源': '#16b176', '文档共建': '#9cb6c4', '跳蚤市场': '#ED207B',
@@ -60,6 +62,20 @@
         catch { return {}; }
     }
 
+    // Get current logged-in user from Discourse preloaded data
+    function getCurrentUser() {
+        try {
+            const preloaded = document.getElementById('data-preloaded');
+            if (preloaded) {
+                const data = JSON.parse(preloaded.dataset.preloaded);
+                if (data.currentUser) {
+                    return JSON.parse(data.currentUser).username;
+                }
+            }
+        } catch (e) {}
+        return null;
+    }
+
     const saved = loadConfig();
     const pushedIds = new Set();
 
@@ -71,7 +87,8 @@
         data: {},
         isCollapsed: GM_getValue('ld_is_collapsed', true), // 默认收起
         isProcessing: false,
-        currentFilter: 'ALL'
+        currentFilter: 'ALL',
+        currentUser: getCurrentUser() // Current logged-in user
     };
 
     function saveConfig() {
@@ -159,34 +176,37 @@
         .sb-card { display: flex; flex-direction: column; gap: 3px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 8px 6px 8px; margin-bottom: 8px; text-decoration: none; color: inherit; transition: 0.2s; position: relative; overflow: hidden; }
         .sb-card:hover { transform: translateX(4px); background: rgba(255,255,255,0.06); border-color: #00d4ff; }
 
-        .sb-card-head { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: #666; }
-        .sb-user-box { display: flex; align-items: center; gap: 4px; color: #ccc; font-weight: 600; }
-        .sb-avatar { width: 18px; height: 18px; border-radius: 50%; background: #333; object-fit: cover; }
+        .sb-card-head { display: flex; align-items: flex-start; gap: 8px; font-size: 11px; color: #666; }
+        .sb-avatar { width: 36px; height: 36px; border-radius: 50%; background: #333; object-fit: cover; flex-shrink: 0; }
+        .sb-avatar-sm { width: 18px; height: 18px; border-radius: 50%; background: #333; object-fit: cover; }
+        .sb-card-info { display: flex; flex-direction: column; gap: 2px; overflow: hidden; flex: 1; }
+        .sb-user-box { display: flex; align-items: center; gap: 2px; color: #ccc; font-weight: 600; flex-wrap: nowrap; white-space: nowrap; line-height: 0.9; }
+        .sb-user-box .svg-icon, .dm-user .svg-icon { width: 12px; height: 12px; fill: #888; vertical-align: middle; margin: 0 4px; }
+        .sb-user-box .action-emoji, .dm-user .action-emoji { width: 14px; height: 14px; vertical-align: middle; margin: 0 4px; }
 
         .sb-card-title { font-size: 12px; font-weight: 600; color: #eee; line-height: 1.4; }
-        .sb-card-excerpt { font-size: 10px; color: #999; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; border-left: 2px solid #333; padding-left: 6px; margin-top: 2px; }
+        .sb-card-excerpt { font-size: 10px; color: #999; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 2px; }
+        .sb-card-excerpt-cited { font-size: 10px; color: #999; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; border-left: 2px solid #333; padding-left: 6px; margin-top: 2px; }
         .sb-card-img { width: 100%; height: 100px; object-fit: cover; border-radius: 4px; margin-top: 4px; border: 1px solid #333; }
         .sb-card-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
         .sb-badge { font-size: 9px; padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.1); }
         .sb-action { font-size: 10px; color: #555; }
         .sb-timestr { font-size: 10px; color: #555; }
 
-        /* Action icons */
-        .sb-user-box .svg-icon, .dm-user .svg-icon { width: 12px; height: 12px; fill: #888; vertical-align: middle; margin: 0 4px; }
-        .sb-user-box .action-emoji, .dm-user .action-emoji { width: 14px; height: 14px; vertical-align: middle; margin: 0 4px; }
-
         /* 弹幕 (在 Shadow DOM 内) */
         .dm-container { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; overflow: hidden; z-index: 10; }
-        .dm-item { position: absolute; left: 100vw; display: flex; gap: 10px; align-items: flex-start; background: rgba(30, 30, 30, 0.9); border: 1px solid #444; padding: 10px 15px; border-radius: 30px; color: #fff; box-shadow: 0 4px 15px rgba(0,0,0,0.5); max-width: 500px; min-width: 250px; pointer-events: auto; cursor: pointer; will-change: transform; animation: dm-fly 12s linear forwards; }
+        .dm-item { position: absolute; left: 100vw; display: flex; flex-direction: column; gap: 4px; background: rgba(30, 30, 30, 0.9); border: 1px solid #444; padding: 10px 15px; border-radius: 30px; color: #fff; box-shadow: 0 4px 15px rgba(0,0,0,0.5); max-width: 500px; min-width: 260px; pointer-events: auto; cursor: pointer; will-change: transform; animation: dm-fly 12s linear forwards; backdrop-filter: blur(5px); }
         .dm-item:hover { z-index: 20; background: #222; border-color: #00d4ff; animation-play-state: paused; }
-        .dm-avatar { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; }
-        .dm-info { display: flex; flex-direction: column; overflow: hidden; }
-        .dm-user { font-size: 12px; color: #00d4ff; font-weight: bold; margin-bottom: 2px; }
-        .dm-text { font-size: 13px; color: #eee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .dm-sub { font-size: 11px; color: #888; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.3; }
+        .dm-top { display: flex; align-items: flex-start; gap: 8px; }
+        .dm-avatar { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #333; }
+        .dm-info { display: flex; flex-direction: column; overflow: hidden; flex: 1; }
+        .dm-user { font-size: 12px; color: #ccc; font-weight: 600; margin-bottom: 2px; display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; white-space: nowrap; line-height: 0.9; }
+        .dm-title { font-size: 13px; font-weight: 600; color: #eee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .dm-excerpt { font-size: 11px; color: #888; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.3; }
+        .dm-excerpt-cited { font-size: 11px; color: #888; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.3; border-left: 2px solid #333; padding-left: 6px; }
 
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-        @keyframes dm-fly { from { transform: translateX(0); } to { transform: translateX(-120vw); } }
+        @keyframes dm-fly { from { transform: translateX(0); } to { transform: translateX(-140vw); } }
 
         /* 调试日志 */
         .sb-console { height: 20px; background: #000; border-top: 1px solid #333; padding: 5px; font-family: monospace; font-size: 10px; overflow-y: auto; color: #666; }
@@ -210,10 +230,11 @@
                         username: action.acting_username,
                         name: action.acting_name,
                         user_id: action.acting_user_id,
+                        avatar_template: action.acting_avatar_template,
                         acting_username: action.username,
                         acting_name: action.name,
                         acting_user_id: action.user_id,
-                        avatar_template: action.acting_avatar_template
+                        acting_avatar_template: action.avatar_template,
                     };
                 }
                 // Type 4 (new topic) and 5 (reply): keep as-is
@@ -308,7 +329,7 @@
         const ACTION_ICONS = {
             reply: '<svg class="fa d-icon d-icon-reply svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M8.309 189.836L184.313 37.851C199.719 24.546 224 35.347 224 56.015v80.053c160.629 1.839 288 34.032 288 186.258 0 61.441-39.581 122.309-83.333 154.132-13.653 9.931-33.111-2.533-28.077-18.631 45.344-145.012-21.507-183.51-176.59-185.742V360c0 20.7-24.3 31.453-39.687 18.164l-176.004-152c-11.071-9.562-11.086-26.753 0-36.328z"/></svg>',
             post: '<svg class="fa d-icon d-icon-pencil svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M497.9 142.1l-46.1 46.1c-4.7 4.7-12.3 4.7-17 0l-111-111c-4.7-4.7-4.7-12.3 0-17l46.1-46.1c18.7-18.7 49.1-18.7 67.9 0l60.1 60.1c18.8 18.7 18.8 49.1 0 67.9zM284.2 99.8L21.6 362.4.4 483.9c-2.9 16.4 11.4 30.6 27.8 27.8l121.5-21.3 262.6-262.6c4.7-4.7 4.7-12.3 0-17l-111-111c-4.8-4.7-12.4-4.7-17.1 0zM88 424h48v36.3l-64.5 11.3-31.1-31.1L51.7 376H88v48z"/></svg>',
-            like: '<svg class="fa d-icon d-icon-d-heart svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><path d="M305 151.1L320 171.8L335 151.1C360 116.5 400.2 96 442.9 96C516.4 96 576 155.6 576 229.1L576 231.7C576 343.9 436.1 474.2 363.1 529.9C350.7 539.3 335.5 544 320 544C304.5 544 289.2 539.4 276.9 529.9C203.9 474.2 64 343.9 64 231.7L64 229.1C64 155.6 123.6 96 197.1 96C239.8 96 280 116.5 305 151.1z"/></svg>',
+            like: '<svg class="fa d-icon d-icon-d-heart svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><path fill="#fa6c8d" d="M305 151.1L320 171.8L335 151.1C360 116.5 400.2 96 442.9 96C516.4 96 576 155.6 576 229.1L576 231.7C576 343.9 436.1 474.2 363.1 529.9C350.7 539.3 335.5 544 320 544C304.5 544 289.2 539.4 276.9 529.9C203.9 474.2 64 343.9 64 231.7L64 229.1C64 155.6 123.6 96 197.1 96C239.8 96 280 116.5 305 151.1z"/></svg>',
         };
 
         if (actionType === 5) return ACTION_ICONS.reply;
@@ -321,16 +342,50 @@
         return ACTION_ICONS.reply; // fallback
     }
 
+    // Get highlight color for a username
+    function getUsernameColor(username) {
+        if (!username) return null;
+        const lower = username.toLowerCase();
+        // Current user gets gold color
+        if (State.currentUser && lower === State.currentUser.toLowerCase()) {
+            return nameColors[0];
+        }
+        // State.users get sequential colors from nameColors[1:]
+        const userIndex = State.users.findIndex(u => u.toLowerCase() === lower);
+        if (userIndex !== -1 && userIndex + 1 < nameColors.length) {
+            return nameColors[userIndex + 1];
+        }
+        return null; // default color
+    }
+
     function formatActionInfo(action) {
         const icon = getActionIcon(action.action_type);
         const user = action.username || '';
         const actingUser = action.acting_username || '';
+        const actingAvatar = action.acting_avatar_template
+            ? CONFIG.HOST + action.acting_avatar_template.replace("{size}", "24")
+            : null;
 
-        // Format: {user} {icon} {acting_user (if available and different)}
+        // Get highlight colors
+        const userColor = getUsernameColor(user);
+        const actingUserColor = getUsernameColor(actingUser);
+
+        // Format content with optional color
+        const formatActingUser = (content, color) => color
+            ? `<span style="color:${color}; display: flex; align-items: center">${content}</span>`
+            : content;
+
+        const userHtml = formatActingUser(user, userColor);
+
+        // Format: {user} {icon} {acting_user avatar + name (if available and different)}
         if (actingUser && actingUser !== user) {
-            return { user, icon, actingUser, html: `${user} ${icon} ${actingUser}` };
+            const actingContent = actingAvatar
+                ? `<img src="${actingAvatar}" class="sb-avatar-sm"> &thinsp;${actingUser}`
+                : actingUser;
+            const actingHtml = formatActingUser(actingContent, actingUserColor);
+            return { user, icon, actingUser, actingAvatar, html: `${userHtml} ${icon} ${actingHtml}` };
         }
-        return { user, icon, actingUser: null, html: `${user} ${icon}` };
+        return { user, icon, actingUser: null, actingAvatar: null, html: `${userHtml} ${icon}` };
     }
 
     // --- Shadow DOM 操作 ---
@@ -368,20 +423,23 @@
                 const item = document.createElement('div');
                 item.className = 'dm-item';
                 item.style.top = `${5 + Math.random() * 80}vh`; // 随机高度
-                item.style.animationDuration = `${10 + Math.random() * 5}s`;
+                item.style.animationDuration = `${8 + Math.random() * 4}s`;
                 item.onclick = () => window.open(link, '_blank');
 
                 const actionInfo = formatActionInfo(action);
+                const excerptClass = (action.action_type === 4 || action.action_type === 5) ? 'dm-excerpt' : 'dm-excerpt-cited';
                 item.innerHTML = `
-                    <img src="${avatar}" class="dm-avatar">
-                    <div class="dm-info">
-                        <div class="dm-user">${actionInfo.html}</div>
-                        <div class="dm-text">${action.title}</div>
-                        ${excerpt ? `<div class="dm-sub">${excerpt}</div>` : ''}
+                    <div class="dm-top">
+                        <img src="${avatar}" class="dm-avatar">
+                        <div class="dm-info">
+                            <div class="dm-user">${actionInfo.html}</div>
+                            <div class="dm-title">${action.title}</div>
+                        </div>
                     </div>
+                    ${excerpt ? `<div class="${excerptClass}">${excerpt}</div>` : ''}
                 `;
                 layer.appendChild(item);
-                setTimeout(() => item.remove(), 16000);
+                // setTimeout(() => item.remove(), 16000);
             }
         }
 
@@ -616,16 +674,17 @@
             const link = `${CONFIG.HOST}/t/${item.topic_id}/${item.post_number}`;
 
             const actionInfo = formatActionInfo(item);
+            const excerptClass = (item.action_type === 4 || item.action_type === 5) ? 'sb-card-excerpt' : 'sb-card-excerpt-cited';
             return `
                 <a href="${link}" target="_blank" class="sb-card">
                     <div class="sb-card-head">
-                        <div class="sb-user-box">
-                            <img src="${avatar}" class="sb-avatar">
-                            ${actionInfo.html}
+                        <img src="${avatar}" class="sb-avatar">
+                        <div class="sb-card-info">
+                            <div class="sb-user-box">${actionInfo.html}</div>
+                            <div class="sb-card-title">${item.title}</div>
                         </div>
                     </div>
-                    <div class="sb-card-title">${item.title}</div>
-                    ${excerpt ? `<div class="sb-card-excerpt">${excerpt}</div>` : ''}
+                    ${excerpt ? `<div class="${excerptClass}">${excerpt}</div>` : ''}
                     ${imgUrl ? `<img src="${imgUrl}" class="sb-card-img" loading="lazy">` : ''}
                     <div class="sb-card-foot">
                         <span class="sb-badge" style="color:${catColor};background:${catColor}15">${catName}</span>
