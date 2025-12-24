@@ -20,17 +20,11 @@
         SYNC_INTERVAL: 60 * 60 * 1000,
         UI_UPDATE_DEBOUNCE: 200,
         STORAGE_KEY: 'linuxdo_likes_history',
-        LIMITS: {
-            0: 50,
-            1: 50,
-            2: 75,
-            3: 100,
-            4: 150
-        }
+        LIMITS: { 0: 50, 1: 50, 2: 75, 3: 100, 4: 150 }
     };
 
     const console = unsafeWindow.console;
-    const log = (msg, ...args) => console.log(`%c[LikeCounter] ${msg}`, 'color: #ff00ff; font-weight: bold;', ...args);
+    const log = (msg, ...args) => console.log(`%c[LikeCounter] ${msg}`, ...args);
 
     let state = { timestamps: [], cooldownUntil: 0, lastSync: 0 };
     let currentUser = null;
@@ -56,13 +50,10 @@
 
     // --- Core Logic: Handle Response Data ---
     function processToggleResponse(url, data) {
-        log(`Processing response from: ${url}`, data);
         loadState();
         const now = Date.now();
 
         if (data.errors && data.error_type === "rate_limit") {
-            log("Rate limit detected via API.");
-
             let waitSeconds = 0;
             if (data.extras && data.extras.wait_seconds) {
                 waitSeconds = data.extras.wait_seconds;
@@ -78,7 +69,6 @@
 
             if (currentCount < limit && waitSeconds > 0) {
                 const needed = limit - currentCount;
-                log(`Backfilling ${needed} placeholder actions.`);
 
                 const cooldownEnd = now + (waitSeconds * 1000);
                 const placeholderBaseTime = cooldownEnd - (24 * 60 * 60 * 1000);
@@ -92,11 +82,16 @@
         } else if (data.id || data.resource_post_id) {
             const isLike = !!data.current_user_reaction;
             if (isLike) {
-                log("Reaction ADDED (+1)");
+                // log("Reaction ADDED (+1)");
                 state.timestamps.push(now);
             } else {
-                log("Reaction REMOVED (-1)");
-                if (state.timestamps.length > 0) state.timestamps.shift();
+                // log("Reaction REMOVED (-1)");
+                if (state.timestamps.length > 0) {
+                    state.timestamps.shift();
+                }
+                if (state.cooldownUntil > now) {
+                    state.cooldownUntil = 0;
+                }
             }
         }
 
@@ -106,8 +101,6 @@
 
     // --- NETWORK INTERCEPTOR (Fetch + XHR) ---
     function installInterceptors() {
-        log("Installing Network Interceptors...");
-
         // 1. Intercept Fetch
         const originalFetch = unsafeWindow.fetch;
         unsafeWindow.fetch = async function(...args) {
@@ -186,10 +179,10 @@
             const diff = state.cooldownUntil - now;
             const h = Math.floor(diff / 3600000);
             const m = Math.floor((diff % 3600000) / 60000);
-            text = `Limit Reached (${h}h ${m}m)`;
+            text = `冷却：${h}h ${m}m`;
             cls += " limit-reached";
         } else {
-            text = `Likes Used: ${count} / ${dailyLimit}`;
+            text = `剩余：${dailyLimit - count} / ${dailyLimit}`;
             if (count >= dailyLimit) cls += " limit-reached";
         }
 
@@ -214,21 +207,22 @@
     }
 
     // --- Sync Logic ---
-    async function fetchAllPages(urlBase) {
+    // Fetch user_actions with offset-based pagination
+    async function fetchUserActions(username) {
         let offset = 0;
-        const limit = 50;
-        let allItems = [];
+        const limit = 20;
+        let allTimestamps = [];
         let keepFetching = true;
         let pagesFetched = 0;
         const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-        const MAX_PAGES = 10; // Safety brake
+        const MAX_PAGES = 10;
 
         while (keepFetching && pagesFetched < MAX_PAGES) {
             try {
-                // Remove density checks; purely check timestamps
-                const response = await fetch(`${urlBase}&offset=${offset}`);
+                const url = `${CONFIG.HOST}/user_actions.json?limit=${limit}&username=${username}&filter=1&offset=${offset}`;
+                const response = await fetch(url);
                 const data = await response.json();
-                let items = data.user_actions || (Array.isArray(data) ? data : []);
+                const items = data.user_actions || [];
 
                 if (!items || items.length === 0) {
                     keepFetching = false;
@@ -239,25 +233,76 @@
                 for (const item of items) {
                     const time = new Date(item.created_at).getTime();
                     if (time > cutoff) {
-                        allItems.push(time);
+                        allTimestamps.push(time);
                     } else {
-                        // Found an item older than 24h, we can stop after this page
                         hasOldItems = true;
                     }
                 }
 
-                if (hasOldItems) {
+                if (hasOldItems || items.length < limit) {
                     keepFetching = false;
                 }
 
                 offset += limit;
                 pagesFetched++;
             } catch (err) {
-                console.warn("[LikeCounter] Fetch error", err);
+                console.warn("[LikeCounter] user_actions fetch error", err);
                 keepFetching = false;
             }
         }
-        return allItems;
+        return allTimestamps;
+    }
+
+    // Fetch reactions with before_reaction_user_id cursor pagination
+    async function fetchReactions(username) {
+        let beforeId = null;
+        let allTimestamps = [];
+        let keepFetching = true;
+        let pagesFetched = 0;
+        const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+        const MAX_PAGES = 10;
+
+        while (keepFetching && pagesFetched < MAX_PAGES) {
+            try {
+                let url = `${CONFIG.HOST}/discourse-reactions/posts/reactions.json?username=${username}`;
+                if (beforeId) {
+                    url += `&before_reaction_user_id=${beforeId}`;
+                }
+
+                const response = await fetch(url);
+                const data = await response.json();
+                const items = Array.isArray(data) ? data : [];
+
+                if (!items || items.length === 0) {
+                    keepFetching = false;
+                    break;
+                }
+
+                let hasOldItems = false;
+                for (const item of items) {
+                    const time = new Date(item.created_at).getTime();
+                    if (time > cutoff) {
+                        allTimestamps.push(time);
+                    } else {
+                        hasOldItems = true;
+                    }
+                }
+
+                // Get the id of the last item for next page cursor
+                const lastItem = items[items.length - 1];
+                beforeId = lastItem.id;
+
+                if (hasOldItems || items.length < 20) {
+                    keepFetching = false;
+                }
+
+                pagesFetched++;
+            } catch (err) {
+                console.warn("[LikeCounter] reactions fetch error", err);
+                keepFetching = false;
+            }
+        }
+        return allTimestamps;
     }
 
     async function syncRemote() {
@@ -271,13 +316,15 @@
 
         cleanOldEntries();
         const username = currentUser.username;
-        const likeUrl = `${CONFIG.HOST}/user_actions.json?limit=50&username=${username}&filter=1`;
-        const reactionUrl = `${CONFIG.HOST}/discourse-reactions/posts/reactions.json?limit=50&username=${username}`;
 
         try {
-            const [likes, reactions] = await Promise.all([fetchAllPages(likeUrl), fetchAllPages(reactionUrl)]);
+            const [likes, reactions] = await Promise.all([
+                fetchUserActions(username),
+                fetchReactions(username)
+            ]);
             const combined = [...likes, ...reactions];
             const maxRemoteTs = Math.max(...combined, 0);
+            log(`[LikeCounter] Synced: ${likes.length} likes, ${reactions.length} reactions`);
 
             const localNewer = state.timestamps.filter(ts => ts > maxRemoteTs + 2000);
 
