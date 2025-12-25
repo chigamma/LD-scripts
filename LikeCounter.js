@@ -2,7 +2,7 @@
 // @name:en      Linux.do Like Counter
 // @name         Linux.do 点赞计数器
 // @namespace    https://linux.do/
-// @version      1.1
+// @version      1.2
 // @description:en  Tracks available likes/reactions on linux.do.
 // @description     显示 linux.do 上的可用点赞数。
 // @author       ChiGamma
@@ -23,7 +23,7 @@
         SYNC_INTERVAL: 30 * 60 * 1000,
         STORAGE_KEY: 'linuxdo_likes_history',
         LIMITS: { 0: 50, 1: 50, 2: 75, 3: 100, 4: 150 },
-        MAX_STORED_ITEMS: 1000
+        MAX_STORED_ITEMS: 500
     };
 
     const console = unsafeWindow.console;
@@ -56,7 +56,24 @@
         const cutoff = now - 24 * 60 * 60 * 1000;
         state.timestamps = state.timestamps.filter(ts => ts > cutoff);
         state.timestamps.sort((a, b) => b - a);
-        if (state.cooldownUntil < now) state.cooldownUntil = 0;
+
+        if (state.cooldownUntil < now) {
+            if (state.cooldownUntil > 0) {
+                const expectedBase = state.cooldownUntil - (24 * 60 * 60 * 1000);
+                const beforeCount = state.timestamps.length;
+                state.timestamps = state.timestamps.filter(ts => ts < expectedBase || ts >= expectedBase + 5000);
+                if (state.timestamps.length < beforeCount) {
+                    checkAndUpdateMismatch();
+                }
+            }
+            state.cooldownUntil = 0;
+        }
+    }
+
+    function checkAndUpdateMismatch() {
+        const limit = (currentUser && CONFIG.LIMITS[currentUser.trust_level]) || 50;
+        const count = state.timestamps.length;
+        state.matched = (count >= limit) || (count === 0 && state.lastSync === 0);
     }
 
     // --- Core Logic ---
@@ -230,13 +247,15 @@
 
         // --- 4. Schedule Next Tick ---
         if (isCooldown) {
-            cooldownTicker = setTimeout(() => requestUiUpdate(true), 1000);
+            const diff = state.cooldownUntil - Date.now();
+            const h = Math.floor(diff / 3600000);
+            cooldownTicker = setTimeout(() => requestUiUpdate(true), h === 0 ? 1000 : 30 * 1000);
         }
     }
 
     // --- Sync Logic ---
     async function fetchUserActions(username) {
-        let offset = 0, limit = 50, allTimestamps = [], keepFetching = true, pages = 0;
+        let offset = 0, limit = 50, allItems = [], keepFetching = true, pages = 0;
         const cutoff = Date.now() - 24 * 60 * 60 * 1000;
 
         while (keepFetching && pages < 5) {
@@ -249,7 +268,7 @@
                 let hasOld = false;
                 for (const item of items) {
                     const t = new Date(item.created_at).getTime();
-                    if (t > cutoff) allTimestamps.push(t);
+                    if (t > cutoff) allItems.push({ post_id: item.post_id, timestamp: t });
                     else hasOld = true;
                 }
                 if (hasOld || items.length < limit) keepFetching = false;
@@ -257,11 +276,11 @@
                 pages++;
             } catch (e) { keepFetching = false; }
         }
-        return allTimestamps;
+        return allItems;
     }
 
     async function fetchReactions(username) {
-        let beforeId = null, allTimestamps = [], keepFetching = true, pages = 0;
+        let beforeId = null, allItems = [], keepFetching = true, pages = 0;
         const cutoff = Date.now() - 24 * 60 * 60 * 1000;
 
         while (keepFetching && pages < 10) {
@@ -275,7 +294,7 @@
                 let hasOld = false;
                 for (const item of items) {
                     const t = new Date(item.created_at).getTime();
-                    if (t > cutoff) allTimestamps.push(t);
+                    if (t > cutoff) allItems.push({ post_id: item.post_id, timestamp: t });
                     else hasOld = true;
                 }
                 beforeId = items[items.length - 1].id;
@@ -283,7 +302,7 @@
                 pages++;
             } catch (e) { keepFetching = false; }
         }
-        return allTimestamps;
+        return allItems;
     }
 
     async function syncRemote() {
@@ -291,23 +310,39 @@
              try { currentUser = require("discourse/models/user").default.current(); } catch(e) {}
              if(!currentUser) return;
         }
+        const savedCooldown = state.cooldownUntil;
         cleanOldEntries();
         const username = currentUser.username;
 
         try {
             const [likes, reactions] = await Promise.all([fetchUserActions(username), fetchReactions(username)]);
             const combined = [...likes, ...reactions];
-            const maxRemote = Math.max(...combined, 0);
+            const postMap = new Map();
+            for (const item of combined) {
+                if (!postMap.has(item.post_id) || postMap.get(item.post_id) < item.timestamp) {
+                    postMap.set(item.post_id, item.timestamp);
+                }
+            }
+            const dedupedTimestamps = Array.from(postMap.values());
+            const maxRemote = Math.max(...dedupedTimestamps, 0);
 
             const localNewer = state.timestamps.filter(ts => ts > maxRemote + 2000);
             let placeholders = [];
-            if (state.cooldownUntil > Date.now()) {
-                const expectedBase = state.cooldownUntil - (24*60*60*1000);
+            if (savedCooldown > Date.now()) {
+                const expectedBase = savedCooldown - (24*60*60*1000);
                 placeholders = state.timestamps.filter(ts => ts >= expectedBase && ts < expectedBase + 5000);
             }
 
-            state.timestamps = Array.from(new Set([...combined, ...localNewer, ...placeholders]));
+            state.timestamps = Array.from(new Set([...dedupedTimestamps, ...localNewer, ...placeholders]));
             state.lastSync = Date.now();
+
+            const limit = CONFIG.LIMITS[currentUser.trust_level] || 50;
+            const apiCount = dedupedTimestamps.length;
+            state.matched = (apiCount === limit);
+            if (savedCooldown > Date.now()) {
+                state.cooldownUntil = savedCooldown;
+            }
+
             cleanOldEntries();
             saveState();
             requestUiUpdate(true);
