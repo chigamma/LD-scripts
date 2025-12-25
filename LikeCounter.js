@@ -1,10 +1,13 @@
 // ==UserScript==
-// @name         Linux.do Like Counter & Tracker (Time-Based Sync)
-// @namespace    http://tampermonkey.net/
-// @version      1.7
-// @description  Tracks available likes/reactions on linux.do. Syncs strictly based on 24h timestamps.
-// @author       Frontend & Scripts
-// @match        https://linux.do/*
+// @name         Linux.do Like Counter
+// @name:zh-CN   Linux.do 点赞计数器
+// @namespace    https://linux.do/
+// @version      1.0
+// @description  Tracks available likes/reactions on linux.do.
+// @description:zh-CN 显示 linux.do 上的可用点赞数。
+// @author       ChiGamma
+// @license      Fair License
+// @match        https://linux.do/t/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addStyle
@@ -17,7 +20,7 @@
 
     const CONFIG = {
         HOST: window.location.origin,
-        SYNC_INTERVAL: 60 * 60 * 1000,
+        SYNC_INTERVAL: 30 * 60 * 1000,
         UI_UPDATE_DEBOUNCE: 200,
         STORAGE_KEY: 'linuxdo_likes_history',
         LIMITS: { 0: 50, 1: 50, 2: 75, 3: 100, 4: 150 }
@@ -26,7 +29,7 @@
     const console = unsafeWindow.console;
     const log = (msg, ...args) => console.log(`%c[LikeCounter] ${msg}`, ...args);
 
-    let state = { timestamps: [], cooldownUntil: 0, lastSync: 0 };
+    let state = { timestamps: [], cooldownUntil: 0, lastSync: 0, matched: true };
     let currentUser = null;
 
     // --- Persistence ---
@@ -66,6 +69,13 @@
             }
 
             const currentCount = state.timestamps.length;
+
+            // Check if current count matches the limit
+            if (currentCount === limit) {
+                state.matched = true;
+            } else {
+                state.matched = false;
+            }
 
             if (currentCount < limit && waitSeconds > 0) {
                 const needed = limit - currentCount;
@@ -142,23 +152,15 @@
 
     // --- UI Rendering ---
     GM_addStyle(`
-        .ld-picker-counter {
-            display: block;
-            width: 100%;
-            text-align: center;
-            font-size: 12px;
-            padding: 6px 0;
-            background: var(--primary-low);
-            color: var(--primary-medium);
-            border-bottom: 1px solid var(--primary-low-mid);
-            font-weight: bold;
-            border-radius: 4px 4px 0 0;
-            margin-bottom: 4px;
-        }
-        .ld-picker-counter.limit-reached {
-            color: var(--danger);
-            background: var(--danger-low);
-        }
+        .ld-picker-counter { width: 100% !important; box-sizing: border-box !important; text-align: center; margin: 0 3.5px !important; padding: 6px 0 4px 0; font-size: 0.85em; font-weight: 600; border-bottom: 1px solid var(--primary-low, #e9e9e9); border-top-left-radius: 8px; border-top-right-radius: 8px; position: relative; }
+        .ld-picker-counter.bg-ok { background-color: color-mix(in srgb, var(--secondary), #00F2FF 15%) !important; }
+        .ld-picker-counter.bg-cooldown { background-color: color-mix(in srgb, var(--secondary), #FF00E5 15%) !important; }
+        .ld-picker-counter.bg-mismatch { background-color: color-mix(in srgb, var(--secondary), #7000FF 15%) !important; }
+        .discourse-reactions-picker .discourse-reactions-picker-container { width: 100% !important; box-sizing: border-box !important; border: none !important; margin-top: 0 !important; border-top-left-radius: 0 !important; border-top-right-radius: 0 !important; background-color: var(--secondary, #fff); }
+        .ld-mismatch-tooltip { display: inline-flex; align-items: center; margin-left: 6px; cursor: help; position: relative; vertical-align: middle; }
+        .ld-mismatch-tooltip svg { width: 14px; height: 14px; fill: currentColor; }
+        .ld-mismatch-tooltip::after { content: attr(data-tooltip); position: absolute; bottom: 125%; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.85); color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.75em; white-space: nowrap; opacity: 0; visibility: hidden; transition: opacity 0.2s, visibility 0.2s; pointer-events: none; z-index: 1000; }
+        .ld-mismatch-tooltip:hover::after { opacity: 1; visibility: visible; }
     `);
 
     function getCounterHtml() {
@@ -175,18 +177,31 @@
         let text = "";
         let cls = "ld-picker-counter";
 
-        if (isCooldown) {
-            const diff = state.cooldownUntil - now;
-            const h = Math.floor(diff / 3600000);
-            const m = Math.floor((diff % 3600000) / 60000);
-            text = `冷却：${h}h ${m}m`;
-            cls += " limit-reached";
+        if (state.matched === false) {
+            cls += " bg-mismatch";
+        } else if (isCooldown) {
+            cls += " bg-cooldown";
         } else {
-            text = `剩余：${dailyLimit - count} / ${dailyLimit}`;
-            if (count >= dailyLimit) cls += " limit-reached";
+            cls += " bg-ok";
         }
 
-        return `<div class="${cls}">${text}</div>`;
+        if (isCooldown) {
+            const diff = Math.max(0, state.cooldownUntil - now);
+            const h = Math.floor(diff / 3600000);
+            const m = Math.floor((diff % 3600000) / 60000);
+            const s = Math.floor((diff % 60000) / 1000);
+            text = `冷却：${h > 0 ? `${h}h ${String(m).padStart(2, '0')} m` : `${String(m).padStart(2, '0')} m ${String(s).padStart(2, '0')} s`}`;
+        } else {
+            text = `剩余：${dailyLimit - count} / ${dailyLimit}`;
+        }
+
+        // Add mismatch tooltip if matched is false
+        let tooltipHtml = '';
+        if (state.matched === false) {
+            tooltipHtml = '<span class="ld-mismatch-tooltip" data-tooltip="计数可能不准确"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><path d="M528 320C528 205.1 434.9 112 320 112C205.1 112 112 205.1 112 320C112 434.9 205.1 528 320 528C434.9 528 528 434.9 528 320zM64 320C64 178.6 178.6 64 320 64C461.4 64 576 178.6 576 320C576 461.4 461.4 576 320 576C178.6 576 64 461.4 64 320zM320 240C302.3 240 288 254.3 288 272C288 285.3 277.3 296 264 296C250.7 296 240 285.3 240 272C240 227.8 275.8 192 320 192C364.2 192 400 227.8 400 272C400 319.2 364 339.2 344 346.5L344 350.3C344 363.6 333.3 374.3 320 374.3C306.7 374.3 296 363.6 296 350.3L296 342.2C296 321.7 310.8 307 326.1 302C332.5 299.9 339.3 296.5 344.3 291.7C348.6 287.5 352 281.7 352 272.1C352 254.4 337.7 240.1 320 240.1zM288 432C288 414.3 302.3 400 320 400C337.7 400 352 414.3 352 432C352 449.7 337.7 464 320 464C302.3 464 288 449.7 288 432z"/></svg></span>';
+        }
+
+        return `<div class="${cls}">${tooltipHtml}${text}</div>`;
     }
 
     function updateUI(force = false) {
@@ -210,12 +225,12 @@
     // Fetch user_actions with offset-based pagination
     async function fetchUserActions(username) {
         let offset = 0;
-        const limit = 20;
+        const limit = 50;
         let allTimestamps = [];
         let keepFetching = true;
         let pagesFetched = 0;
         const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-        const MAX_PAGES = 10;
+        const MAX_PAGES = 5;
 
         while (keepFetching && pagesFetched < MAX_PAGES) {
             try {
