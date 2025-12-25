@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         LinuxDo追觅
 // @namespace    http://tampermonkey.net/
-// @version      3.1 - fork from 2025-08-06-v21-cross-origin
+// @version      3.1
 // @description  在任何网页上实时监控 Linux.do 活动。
-// @author       ChiGamma (fork from NullUser)
+// @author       ChiGamma
 // @match        https://linux.do/*
 // @connect      linux.do
 // @icon         https://linux.do/uploads/default/original/3X/9/d/9dd4973138ccd78e8907865261d7b14d45a96d1c.png
@@ -13,6 +13,7 @@
 // @grant        GM_getValue
 // @grant        window.focus
 // ==/UserScript==
+// Fork from 2025-08-06-v21-cross-origin by @NullUser.
 
 (function () {
     'use strict';
@@ -93,6 +94,11 @@
         isLeader: false
     };
 
+    function getUserColor(username) {
+        const idx = State.users.indexOf(username);
+        return nameColors[1 + idx % nameColors.length];
+    }
+
     // --- Cross-Tab BroadcastChannel ---
     const CHANNEL_NAME = 'ld_seeking_channel';
     const channel = new BroadcastChannel(CHANNEL_NAME);
@@ -103,7 +109,8 @@
             users: State.users,
             lastIds: State.lastIds,
             enableSysNotify: State.enableSysNotify,
-            enableDanmaku: State.enableDanmaku
+            enableDanmaku: State.enableDanmaku,
+            hiddenUsers: Array.from(State.hiddenUsers)
         };
         GM_setValue('ld_v21_config', JSON.stringify(store));
     }
@@ -139,49 +146,57 @@
         :host { all: initial; font-family: system-ui, -apple-system, sans-serif; font-size: 14px; z-index: 2147483647; position: fixed; top: 0; left: 0; pointer-events: none; width: 100vw; height: 100vh; }
 
         /* 侧边栏容器 */
-        #ld-sidebar { position: fixed; top: 0; left: 0; width: ${CONFIG.SIDEBAR_WIDTH}; height: 100vh; background: rgba(18, 18, 18, 0.95); backdrop-filter: blur(10px); border-right: 1px solid rgba(255, 255, 255, 0.1); display: flex; flex-direction: column; color: #eee; box-shadow: 5px 0 25px rgba(0,0,0,0.5); transition: transform 0.3s cubic-bezier(0.2, 0, 0, 1); pointer-events: auto; }
+        #ld-sidebar { position: fixed; top: 0; left: 0; width: ${CONFIG.SIDEBAR_WIDTH}; height: 100vh; background: rgba(18, 18, 18, 0.95); backdrop-filter: blur(10px); border-right: 1px solid rgba(255, 255, 255, 0.1); display: flex; flex-direction: column; color: #eee; box-shadow: 5px 0 25px rgba(0,0,0,0.5); transition: transform 0.3s cubic-bezier(0.2, 0, 0, 1); pointer-events: auto; overflow: visible; }
         #ld-sidebar.collapsed { transform: translateX(-${CONFIG.SIDEBAR_WIDTH}); }
-
-        /* 悬浮开关 (小球) */
-        #ld-toggle-ball { position: absolute; right: -24px; top: 50vh; width: 24px; height: 48px; background: #222; border: 1px solid rgba(255,255,255,0.2); border-left: none; border-radius: 0 100px 100px 0; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #00d4ff; box-shadow: 2px 0 10px rgba(0,0,0,0.3); pointer-events: auto; transition: 0.2s; }
+        #ld-toggle-ball { position: absolute; right: -24px; top: 50vh; width: 24px; height: 48px; background: #222; border: 1px solid rgba(255,255,255,0.2); border-left: none; border-radius: 0 100px 100px 0; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #ffd700; box-shadow: 2px 0 10px rgba(0,0,0,0.3); pointer-events: auto; transition: 0.2s; }
         #ld-toggle-ball:hover { width: 32px; background: #333; }
 
         /* 头部 */
-        .sb-header { padding: 15px; background: rgba(0,0,0,0.3); border-bottom: 1px solid rgba(255,255,255,0.1); }
-        .sb-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-        .sb-title { font-weight: 800; font-size: 16px; color: #fff; display: flex; align-items: center; gap: 8px; }
+        .sb-header { padding: 8px; background: rgba(18, 18, 18, 0.98); flex-shrink: 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .sb-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .sb-title { font-weight: 800; font-size: 14px; color: #fff; display: flex; align-items: center; gap: 8px; }
         .sb-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #666; transition: 0.3s; }
         .sb-status-dot.ok { background: #00ff88; box-shadow: 0 0 8px #00ff88; }
-        .sb-status-dot.loading { background: #00d4ff; animation: pulse 1s infinite; }
+        .sb-status-dot.loading { background: #ffd700; animation: pulse 1s infinite; }
 
-        /* 工具栏 */
         .sb-tools { display: flex; gap: 6px; }
         .sb-icon-btn { background: transparent; border: none; color: #888; cursor: pointer; font-size: 14px; padding: 4px; border-radius: 4px; transition: 0.2s; }
         .sb-icon-btn:hover { color: #fff; background: rgba(255,255,255,0.1); }
-        .sb-icon-btn.active { color: #00d4ff; background: rgba(0, 212, 255, 0.1); }
+        .sb-icon-btn.active { color: #ffd700; background: rgba(0, 212, 255, 0.1); }
 
-        /* 输入框 */
-        .sb-input-group { display: flex; gap: 5px; margin-bottom: 10px; }
-        .sb-input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 6px 10px; border-radius: 6px; outline: none; font-size: 12px; }
-        .sb-input:focus { border-color: #00d4ff; }
-        .sb-btn-add { background: #00d4ff; color: #000; border: none; border-radius: 6px; width: 30px; cursor: pointer; font-weight: bold; }
+        /* 用户列表 */
+        .sb-input-group { display: flex; gap: 5px; margin-bottom: 6px; }
+        .sb-input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 2px 10px; border-radius: 6px; outline: none; font-size: 11px; }
+        .sb-input:focus { border-color: #ffd700; }
+        .sb-btn-add { background: #ffd700; color: #000; border: none; border-radius: 6px; width: 20.5px; padding: 1px; cursor: pointer; font-weight: bold; }
 
-        /* 标签 */
-        .sb-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-        .sb-tag { font-size: 10px; padding: 3px 8px; border-radius: 10px; background: rgba(255,255,255,0.1); color: #aaa; cursor: pointer; display: flex; align-items: center; gap: 4px; border: 1px solid transparent; }
-        .sb-tag:hover { background: rgba(255,255,255,0.2); color: #fff; }
-        .sb-tag.active { background: rgba(0, 212, 255, 0.15); color: #00d4ff; border-color: rgba(0,212,255,0.3); }
-        .sb-tag-close { font-size: 12px; line-height: 1; opacity: 0.6; }
-        .sb-tag-close:hover { opacity: 1; color: #ff5555; }
+        .sb-tags { display: block; margin-top: 5px; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; overflow: hidden; }
+        .sb-user-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 2px; background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.05); border-left: 2px solid #989898; }
+        .sb-user-row:last-child { border-bottom: none; }
+        .sb-user-row:hover { background: rgba(255,255,255,0.08); }
+        .sb-user-row.active { background: rgba(0, 212, 255, 0.1); border-left: 2px solid #ffd700; }
 
-        /* 列表区域 */
-        .sb-list { flex: 1; overflow-y: auto; padding: 10px; scrollbar-width: thin; scrollbar-color: #444 transparent; }
+        .sb-del { font-size: 12px; color: #666; cursor: pointer; margin: 0 0 1px 1px; line-height: 1; }
+        .sb-del:hover { color: #ff5555; }
+        .sb-timer-circle { flex-shrink: 0; margin: 1px 2px 0 1px; }
+        .sb-timer-circle:hover { opacity: 0.8; }
+
+        .sb-user-name { font-size: 11px; color: #ccc; cursor: pointer; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .sb-user-name.disabled { color: #666; }
+        .sb-user-row.active .sb-user-name { color: #ffd700; font-weight: 600; }
+
+        .sb-toggle { width: 24px; height: 12px; background: #333; border-radius: 6px; position: relative; cursor: pointer; transition: 0.2s; }
+        .sb-toggle.on { background: #ffd700; }
+        .sb-toggle-dot { width: 8px; height: 8px; background: #fff; border-radius: 50%; position: absolute; top: 2px; left: 2px; transition: 0.2s; }
+        .sb-toggle.on .sb-toggle-dot { left: 14px; }
+
+        /* 卡片列表 */
+        .sb-list { flex: 1; padding: 8px; background: transparent; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #444 transparent; }
         .sb-list::-webkit-scrollbar { width: 4px; }
         .sb-list::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
 
-        /* 卡片 */
         .sb-card { display: flex; flex-direction: column; gap: 3px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 8px 6px 8px; margin-bottom: 8px; text-decoration: none; color: inherit; transition: 0.2s; position: relative; overflow: hidden; }
-        .sb-card:hover { transform: translateX(4px); background: rgba(255,255,255,0.06); border-color: #00d4ff; }
+        .sb-card:hover { transform: translateX(4px); background: rgba(255,255,255,0.06); border-color: #ffd700; }
 
         .sb-card-head { display: flex; align-items: flex-start; gap: 8px; font-size: 11px; color: #666; }
         .sb-avatar { width: 36px; height: 36px; border-radius: 50%; background: #333; object-fit: cover; flex-shrink: 0; }
@@ -200,10 +215,10 @@
         .sb-action { font-size: 10px; color: #555; }
         .sb-timestr { font-size: 10px; color: #555; }
 
-        /* 弹幕 (在 Shadow DOM 内) */
+        /* 弹幕 */
         .dm-container { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; overflow: hidden; z-index: 10; }
-        .dm-item { position: absolute; left: 100vw; display: flex; flex-direction: column; gap: 4px; background: rgba(30, 30, 30, 0.9); border: 1px solid #444; padding: 10px 15px; border-radius: 30px; color: #fff; box-shadow: 0 4px 15px rgba(0,0,0,0.5); max-width: 500px; min-width: 260px; pointer-events: auto; cursor: pointer; will-change: transform; animation: dm-fly 12s linear forwards; backdrop-filter: blur(5px); }
-        .dm-item:hover { z-index: 20; background: #222; border-color: #00d4ff; animation-play-state: paused; }
+        .dm-item { position: absolute; left: 100vw; display: flex; flex-direction: column; gap: 4px; background: rgba(30, 30, 30, 0.9); border: 1px solid #444; padding: 10px 15px; border-radius: 30px; color: #fff; box-shadow: 0 4px 15px rgba(0,0,0,0.5); max-width: 500px; min-width: 260px; pointer-events: auto; cursor: pointer; will-change: transform; animation: dm-fly 12s linear forwards; backdrop-filter: blur(5px); overflow: hidden; }
+        .dm-item:hover { z-index: 20; background: #222; border-color: #ffd700; animation-play-state: paused; }
         .dm-top { display: flex; align-items: flex-start; gap: 8px; }
         .dm-avatar { width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; background: #333; }
         .dm-info { display: flex; flex-direction: column; overflow: hidden; flex: 1; }
@@ -529,18 +544,28 @@
         if (dot) dot.className = 'sb-status-dot loading';
 
         let hasUpdates = false;
+        const now = Date.now();
+
         for (const user of State.users) {
             const updated = await processUser(user, true);
             if (updated) hasUpdates = true;
+            State.nextFetchTime[user] = now + (State.users.length * CONFIG.REFRESH_INTERVAL_MS);
         }
 
         if (hasUpdates) {
             saveConfig();
         }
         renderList();
+        renderTags();
 
         // Broadcast update to other tabs
-        channel.postMessage({ type: 'data_update', data: State.data, lastIds: State.lastIds });
+        channel.postMessage({
+            type: 'data_update',
+            data: State.data,
+            lastIds: State.lastIds,
+            hiddenUsers: Array.from(State.hiddenUsers),
+            nextFetchTime: State.nextFetchTime
+        });
 
         if (dot) dot.className = 'sb-status-dot ok';
         State.isProcessing = false;
@@ -556,16 +581,22 @@
 
         const user = State.users[State.currentUserIndex];
         const hasUpdates = await processUser(user, false);
-
-        // Rotate to next user
+        const nextTime = Date.now() + (State.users.length * CONFIG.REFRESH_INTERVAL_MS);
+        State.nextFetchTime[user] = nextTime;
         State.currentUserIndex = (State.currentUserIndex + 1) % State.users.length;
 
-        if (hasUpdates) {
-            saveConfig();
-            renderList();
-            // Broadcast update to other tabs
-            channel.postMessage({ type: 'data_update', data: State.data, lastIds: State.lastIds });
-        }
+        if (hasUpdates) saveConfig();
+
+        renderList();
+        renderTags();
+
+        channel.postMessage({
+            type: 'data_update',
+            data: State.data,
+            lastIds: State.lastIds,
+            hiddenUsers: Array.from(State.hiddenUsers),
+            nextFetchTime: State.nextFetchTime
+        });
 
         if (dot) dot.className = 'sb-status-dot ok';
         State.isProcessing = false;
@@ -600,7 +631,13 @@
             case 'data_request':
                 // Follower is requesting current data
                 if (State.isLeader && Object.keys(State.data).length > 0) {
-                    channel.postMessage({ type: 'data_update', data: State.data, lastIds: State.lastIds });
+                    channel.postMessage({
+                        type: 'data_update',
+                        data: State.data,
+                        lastIds: State.lastIds,
+                        hiddenUsers: Array.from(State.hiddenUsers),
+                        nextFetchTime: State.nextFetchTime
+                    });
                 }
                 break;
             case 'leader_resign':
@@ -612,7 +649,10 @@
                 if (!State.isLeader) {
                     State.data = msg.data;
                     State.lastIds = msg.lastIds;
+                    if(msg.hiddenUsers) State.hiddenUsers = new Set(msg.hiddenUsers);
+                    if(msg.nextFetchTime) State.nextFetchTime = msg.nextFetchTime;
                     renderList();
+                    renderTags();
                 }
                 break;
             case 'new_action':
@@ -673,7 +713,7 @@
                         <div class="sb-tools">
                             <button id="btn-dm" class="sb-icon-btn ${State.enableDanmaku?'active':''}" title="弹幕">💬</button>
                             <button id="btn-sys" class="sb-icon-btn ${State.enableSysNotify?'active':''}" title="通知">🔔</button>
-                            <button id="btn-refresh" class="sb-icon-btn" title="刷新">↻</button>
+                            <button id="btn-refresh" class="sb-icon-btn" title="刷新">🔄</button>
                         </div>
                     </div>
                     <div class="sb-input-group">
@@ -742,9 +782,9 @@
         });
 
         renderTags();
+        updateTimers();
         log('Seeking Engine Started.', 'success');
 
-        // 定期轮询: 每次只查询一个用户 (仅leader执行)
         setInterval(() => tickOne(), CONFIG.REFRESH_INTERVAL_MS);
     }
 
@@ -756,39 +796,167 @@
         renderList();
     }
 
+    function toggleUserVisibility(name) {
+        if (State.hiddenUsers.has(name)) {
+            State.hiddenUsers.delete(name);
+        } else {
+            State.hiddenUsers.add(name);
+        }
+        saveConfig();
+        renderTags();
+        renderList();
+        channel.postMessage({
+            type: 'data_update',
+            data: State.data,
+            lastIds: State.lastIds,
+            hiddenUsers: Array.from(State.hiddenUsers),
+            nextFetchTime: State.nextFetchTime
+        });
+    }
+
+    // Refresh a single user immediately when timer is clicked
+    async function refreshSingleUser(username) {
+        if (State.isProcessing) return;
+        State.isProcessing = true;
+
+        const dot = shadowRoot?.querySelector('.sb-status-dot');
+        if (dot) dot.className = 'sb-status-dot loading';
+
+        const hasUpdates = await processUser(username, false);
+        // Fix: Reset timer countdown after refresh
+        State.nextFetchTime[username] = Date.now() + (State.users.length * CONFIG.REFRESH_INTERVAL_MS);
+
+        if (hasUpdates) saveConfig();
+        renderList();
+        renderTags();
+
+        channel.postMessage({
+            type: 'data_update',
+            data: State.data,
+            lastIds: State.lastIds,
+            hiddenUsers: Array.from(State.hiddenUsers),
+            nextFetchTime: State.nextFetchTime
+        });
+
+        if (dot) dot.className = 'sb-status-dot ok';
+        State.isProcessing = false;
+    }
+
+    // Timer update loop
+    function updateTimers() {
+        if (!shadowRoot) return;
+        const now = Date.now();
+        const totalInterval = State.users.length * CONFIG.REFRESH_INTERVAL_MS;
+
+        State.users.forEach(user => {
+            const timerEl = shadowRoot.getElementById(`timer-${user}`);
+            if (timerEl) {
+                const progressCircle = timerEl.querySelector('.timer-progress');
+                if (progressCircle) {
+                    const circumference = parseFloat(timerEl.getAttribute('data-circumference'));
+                    const next = State.nextFetchTime[user];
+
+                    if (next) {
+                        const remaining = Math.max(0, next - now);
+                        const progress = remaining / totalInterval;
+                        const offset = circumference * (1 - Math.min(1, progress));
+                        progressCircle.style.strokeDashoffset = offset;
+                    } else {
+                        progressCircle.style.strokeDashoffset = 0;
+                    }
+                }
+            }
+        });
+        requestAnimationFrame(updateTimers);
+    }
+
     function renderTags() {
         if (!shadowRoot) return;
         const div = shadowRoot.getElementById('sb-tags');
         div.innerHTML = '';
 
-        const createTag = (text, isAll) => {
-            const el = document.createElement('div');
-            el.className = `sb-tag ${State.currentFilter === (isAll?'ALL':text) ? 'active':''}`;
-            el.innerHTML = isAll ? `全部` : `<span>${text}</span><span class="sb-tag-close">×</span>`;
+        // User Rows
+        State.users.forEach(u => {
+            const isHidden = State.hiddenUsers.has(u);
+            const userColor = getUserColor(u);
+            const highlightColor = nameColors[0]; // Gold for row highlight
+            const row = document.createElement('div');
+            row.className = `sb-user-row ${isHidden ? '' : 'active'}`;
+            // Apply highlight color for active rows background/border, user color for text
+            if (!isHidden) {
+                row.style.borderLeftColor = highlightColor;
+                row.style.background = `${highlightColor}15`;
+            }
 
-            el.onclick = () => {
-                State.currentFilter = isAll ? 'ALL' : text;
-                renderTags();
-                renderList();
+            // Delete Btn
+            const delBtn = document.createElement('div');
+            delBtn.className = 'sb-del';
+            delBtn.textContent = '×';
+            delBtn.title = '移除用户';
+            delBtn.onclick = (e) => {
+                e.stopPropagation();
+                removeUser(u);
             };
 
-            if(!isAll) {
-                const close = el.querySelector('.sb-tag-close');
-                close.onclick = (e) => { e.stopPropagation(); removeUser(text); };
-            }
-            div.appendChild(el);
-        };
+            // Timer
+            const timerSize = 10;
+            const timerStroke = 2;
+            const timerRadius = (timerSize - timerStroke) / 2;
+            const timerCircum = 2 * Math.PI * timerRadius;
 
-        createTag('All', true);
-        State.users.forEach(u => createTag(u, false));
+            const timerSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            timerSvg.setAttribute('width', timerSize);
+            timerSvg.setAttribute('height', timerSize);
+            timerSvg.setAttribute('class', 'sb-timer-circle');
+            timerSvg.id = `timer-${u}`;
+            timerSvg.style.cursor = 'pointer';
+            timerSvg.setAttribute('data-circumference', timerCircum);
+            timerSvg.innerHTML = `
+                <circle cx="${timerSize/2}" cy="${timerSize/2}" r="${timerRadius}"
+                    fill="none" stroke="#333" stroke-width="${timerStroke}"/>
+                <circle class="timer-progress" cx="${timerSize/2}" cy="${timerSize/2}" r="${timerRadius}"
+                    fill="none" stroke="${isHidden ? '#666' : userColor}" stroke-width="${timerStroke}"
+                    stroke-dasharray="${timerCircum}" stroke-dashoffset="${timerCircum}"
+                    transform="rotate(-90 ${timerSize/2} ${timerSize/2})"/>
+            `;
+            timerSvg.title = '刷新时间';
+            timerSvg.onclick = (e) => {
+                e.stopPropagation();
+                refreshSingleUser(u);
+            };
+
+            // Name Area
+            const nameEl = document.createElement('div');
+            nameEl.className = `sb-user-name ${isHidden ? 'disabled' : ''}`;
+            nameEl.textContent = u;
+            if (!isHidden) {
+                nameEl.style.color = userColor;
+            }
+
+            // Order: controls first, then name
+            row.appendChild(delBtn);
+            row.appendChild(timerSvg);
+            row.appendChild(nameEl);
+
+            // Click row to toggle visibility
+            row.onclick = () => {
+                toggleUserVisibility(u);
+            };
+
+            div.appendChild(row);
+        });
     }
 
     function renderList() {
         if (!shadowRoot) return;
         const div = shadowRoot.getElementById('sb-list');
         let all = [];
-        if (State.currentFilter === 'ALL') Object.values(State.data).forEach(arr => all.push(...arr));
-        else all = State.data[State.currentFilter] || [];
+
+        Object.entries(State.data).forEach(([user, arr]) => {
+            if (!State.hiddenUsers.has(user)) {
+                all.push(...arr);
+            }
+        });
 
         all.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
 
