@@ -129,53 +129,16 @@
 
     // --- UI Rendering ---
     GM_addStyle(`
-        .ld-picker-counter {
-            width: 100% !important;
-            box-sizing: border-box !important;
-            text-align: center;
-            margin: 0 3.5px !important;
-            padding: 6px 0 4px 0;
-            font-size: 0.85em;
-            font-weight: 600;
-            border-bottom: 1px solid var(--primary-low, #e9e9e9);
-            border-top-left-radius: 8px;
-            border-top-right-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
+        .ld-picker-counter { width: 100% !important; box-sizing: border-box !important; text-align: center; margin: 0 3.5px !important; padding: 6px 0 4px 0; font-size: 0.85em; font-weight: 600; border-bottom: 1px solid var(--primary-low, #e9e9e9); border-top-left-radius: 8px; border-top-right-radius: 8px; display: flex; align-items: center; justify-content: center; }
         .ld-picker-counter.bg-ok { background-color: color-mix(in srgb, var(--secondary), #00F2FF 15%) !important; }
         .ld-picker-counter.bg-cooldown { background-color: color-mix(in srgb, var(--secondary), #FF00E5 15%) !important; }
         .ld-picker-counter.bg-mismatch { background-color: color-mix(in srgb, var(--secondary), #7000FF 15%) !important; }
         .discourse-reactions-picker .discourse-reactions-picker-container { margin-top: 0 !important; border-top-left-radius: 0 !important; border-top-right-radius: 0 !important; }
 
-        .ld-mismatch-tooltip {
-            display: inline-flex;
-            align-items: center;
-            margin-right: 6px;
-            cursor: help;
-            position: relative;
-        }
+        .ld-mismatch-tooltip { display: inline-flex; align-items: center; margin-right: 6px; cursor: help; position: relative; }
         .ld-mismatch-tooltip svg { width: 14px; height: 14px; fill: currentColor; }
 
-        .ld-mismatch-tooltip::after {
-            content: attr(data-tooltip);
-            position: absolute;
-            bottom: 125%;
-            left: 50%;
-            transform: translateX(-50%);
-            background: rgba(0,0,0,0.85);
-            color: #fff;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 0.75em;
-            white-space: nowrap;
-            opacity: 0;
-            visibility: hidden;
-            transition: opacity 0.2s;
-            pointer-events: none;
-            z-index: 9999;
-        }
+        .ld-mismatch-tooltip::after { content: attr(data-tooltip); position: absolute; bottom: 125%; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.85); color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.75em; white-space: nowrap; opacity: 0; visibility: hidden; transition: opacity 0.2s; pointer-events: none; z-index: 9999; }
         .ld-mismatch-tooltip:hover::after { opacity: 1; visibility: visible; }
     `);
 
@@ -197,16 +160,13 @@
         const picker = document.querySelector('.discourse-reactions-picker');
 
         // --- 1. Auto-cleanup Timer ---
-        // Always clear the pending tick first. We will re-schedule it at the end if needed.
         if (cooldownTicker) {
             clearTimeout(cooldownTicker);
             cooldownTicker = null;
         }
 
-        // If picker is gone, stop everything.
         if (!picker) return;
 
-        // --- 2. Calculate State ---
         cleanOldEntries();
         const count = state.timestamps.length;
         const now = Date.now();
@@ -214,8 +174,11 @@
         const dailyLimit = (currentUser && CONFIG.LIMITS[currentUser.trust_level]) || 50;
 
         let statusClass = "bg-ok";
-        if (!state.matched) statusClass = "bg-mismatch";
-        else if (isCooldown) statusClass = "bg-cooldown";
+        if (isCooldown) {
+            statusClass = "bg-cooldown";
+        } else if (!state.matched) {
+            statusClass = "bg-mismatch";
+        }
 
         const finalClassName = `ld-picker-counter ${statusClass}`;
 
@@ -230,7 +193,6 @@
             displayText = `剩余：${dailyLimit - count} / ${dailyLimit}`;
         }
 
-        // --- 3. Render UI ---
         let counter = picker.querySelector('.ld-picker-counter');
 
         if (!counter) {
@@ -242,7 +204,7 @@
         }
 
         let tooltipSpan = counter.querySelector('.ld-mismatch-tooltip');
-        const shouldShowTooltip = !state.matched;
+        const shouldShowTooltip = !state.matched && !isCooldown;
 
         if (shouldShowTooltip && !tooltipSpan) {
             tooltipSpan = document.createElement('span');
@@ -267,8 +229,6 @@
         }
 
         // --- 4. Schedule Next Tick ---
-        // If we are in cooldown mode, schedule the next update in 1 second.
-        // This loop automatically dies if the picker closes (because step 1 returns early next time).
         if (isCooldown) {
             cooldownTicker = setTimeout(() => requestUiUpdate(true), 1000);
         }
@@ -361,8 +321,6 @@
     let observerTimer = null;
     const observer = new MutationObserver((mutations) => {
         let reactionPickerFound = false;
-
-        // Optimized Scan
         for (const m of mutations) {
             if (m.addedNodes.length) {
                 for (const node of m.addedNodes) {
@@ -377,7 +335,7 @@
 
         if (reactionPickerFound) {
             if (observerTimer) clearTimeout(observerTimer);
-            requestUiUpdate(true); // Immediate
+            requestUiUpdate(true);
         } else {
             if (observerTimer) return;
             observerTimer = setTimeout(() => {
