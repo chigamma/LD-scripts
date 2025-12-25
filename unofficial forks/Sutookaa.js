@@ -24,14 +24,13 @@
     const CONFIG = {
         MAX_USERS: 5,
         SIDEBAR_WIDTH: '300px',
-        REFRESH_INTERVAL_MS: 20 * 1000,
+        REFRESH_INTERVAL_MS: 60 * 1000,
         LOG_LIMIT_PER_USER: 15,
         HOST: 'https://linux.do'
     };
-
-    // --- 类别定义 ---
     const nameColors = ["#ffd700", "#00d4ff", "#ff6b6b", "#4d5ef7ff", "#c77dff", "#00ff88", "#f87ecaff"];
 
+    // --- 类别定义 ---
     const categoryColors = {
         '开发调优': '#32c3c3', '国产替代': '#D12C25', '资源荟萃': '#12A89D',
         '网盘资源': '#16b176', '文档共建': '#9cb6c4', '跳蚤市场': '#ED207B',
@@ -62,8 +61,7 @@
         catch { return {}; }
     }
 
-    // Get current logged-in user from Discourse preloaded data
-    function getCurrentUser() {
+    function getSelfUser() {
         try {
             const preloaded = document.getElementById('data-preloaded');
             if (preloaded) {
@@ -85,13 +83,14 @@
         enableSysNotify: saved.enableSysNotify !== false,
         enableDanmaku: saved.enableDanmaku !== false,
         data: {},
-        isCollapsed: GM_getValue('ld_is_collapsed', true), // 默认收起
-        // isCollapsed: true, // 默认收起，不持久化
+        // isCollapsed: GM_getValue('ld_is_collapsed', true), // 默认收起
+        isCollapsed: sessionStorage.getItem('ld_is_collapsed') !== 'false', // 默认收起，每个tab独立
         isProcessing: false,
-        currentFilter: 'ALL',
-        currentUser: getCurrentUser(), // Current logged-in user
-        currentUserIndex: 0, // For rotating single-user queries
-        isLeader: false // For cross-tab coordination
+        hiddenUsers: new Set(saved.hiddenUsers || []),
+        selfUser: getSelfUser(),
+        currentUserIndex: 0,
+        nextFetchTime: {},
+        isLeader: false
     };
 
     // --- Cross-Tab BroadcastChannel ---
@@ -227,7 +226,6 @@
     `;
 
     // --- 逻辑处理 ---
-
     async function fetchUser(username) {
         try {
             // Fetch user_actions
@@ -255,8 +253,8 @@
             });
 
             // Fetch reactions
-            // NOTE: the limit seems to be fixed at 20
-            const url2 = `${CONFIG.HOST}/discourse-reactions/posts/reactions.json?offset=0&limit=${CONFIG.LOG_LIMIT_PER_USER}&username=${username}`;
+            // NOTE: the limit is fixed at 20
+            const url2 = `${CONFIG.HOST}/discourse-reactions/posts/reactions.json?username=${username}`;
             const json2 = await safeFetch(url2);
 
             // Transform reactions to match user_actions format
@@ -337,12 +335,15 @@
     }
 
     // --- Unified Action Formatting ---
-
     function getActionIcon(actionType) {
         const ACTION_ICONS = {
             reply: '<svg class="fa d-icon d-icon-reply svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M8.309 189.836L184.313 37.851C199.719 24.546 224 35.347 224 56.015v80.053c160.629 1.839 288 34.032 288 186.258 0 61.441-39.581 122.309-83.333 154.132-13.653 9.931-33.111-2.533-28.077-18.631 45.344-145.012-21.507-183.51-176.59-185.742V360c0 20.7-24.3 31.453-39.687 18.164l-176.004-152c-11.071-9.562-11.086-26.753 0-36.328z"/></svg>',
             post: '<svg class="fa d-icon d-icon-pencil svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M497.9 142.1l-46.1 46.1c-4.7 4.7-12.3 4.7-17 0l-111-111c-4.7-4.7-4.7-12.3 0-17l46.1-46.1c18.7-18.7 49.1-18.7 67.9 0l60.1 60.1c18.8 18.7 18.8 49.1 0 67.9zM284.2 99.8L21.6 362.4.4 483.9c-2.9 16.4 11.4 30.6 27.8 27.8l121.5-21.3 262.6-262.6c4.7-4.7 4.7-12.3 0-17l-111-111c-4.8-4.7-12.4-4.7-17.1 0zM88 424h48v36.3l-64.5 11.3-31.1-31.1L51.7 376H88v48z"/></svg>',
             like: '<svg class="fa d-icon d-icon-d-heart svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><path fill="#fa6c8d" d="M305 151.1L320 171.8L335 151.1C360 116.5 400.2 96 442.9 96C516.4 96 576 155.6 576 229.1L576 231.7C576 343.9 436.1 474.2 363.1 529.9C350.7 539.3 335.5 544 320 544C304.5 544 289.2 539.4 276.9 529.9C203.9 474.2 64 343.9 64 231.7L64 229.1C64 155.6 123.6 96 197.1 96C239.8 96 280 116.5 305 151.1z"/></svg>',
+        };
+        const REACTION_ICONS = {
+            "tieba_087": '/uploads/default/original/3X/2/e/2e09f3a3c7b27eacbabe9e9614b06b88d5b06343.png?v=15',
+            "bili_057": '/uploads/default/original/3X/1/a/1a9f6c30e88a7901b721fffc1aaeec040f54bdf3.png?v=15'
         };
 
         if (actionType === 5) return ACTION_ICONS.reply;
@@ -350,6 +351,7 @@
         if (actionType === 1) return ACTION_ICONS.like;
         // For reactions (action_type is the reaction_value string like "laughing", "hugs")
         if (typeof actionType === 'string') {
+            if (REACTION_ICONS[actionType]) return `<img src="${CONFIG.HOST}${REACTION_ICONS[actionType]}" class="action-emoji" alt=":${actionType}:">`;
             return `<img src="${CONFIG.HOST}/images/emoji/twemoji/${actionType}.png?v=15" class="action-emoji" alt=":${actionType}:">`;
         }
         return ACTION_ICONS.reply; // fallback
@@ -360,7 +362,7 @@
         if (!username) return null;
         const lower = username.toLowerCase();
         // Current user gets gold color
-        if (State.currentUser && lower === State.currentUser.toLowerCase()) {
+        if (State.selfUser && lower === State.selfUser.toLowerCase()) {
             return nameColors[0];
         }
         // State.users get sequential colors from nameColors[1:]
@@ -384,18 +386,18 @@
         const actingUserColor = getUsernameColor(actingUser);
 
         // Format content with optional color
-        const formatActingUser = (content, color) => color
-            ? `<span style="color:${color}; display: flex; align-items: center">${content}</span>`
+        const formatUsername = (content, color) => color
+            ? `<span style="color:${color}; display: flex; align-items: center; gap: 1px;">${content}</span>`
             : content;
 
-        const userHtml = formatActingUser(user, userColor);
+        const userHtml = formatUsername(user, userColor);
 
         // Format: {user} {icon} {acting_user avatar + name (if available and different)}
         if (actingUser && actingUser !== user) {
             const actingContent = actingAvatar
-                ? `<img src="${actingAvatar}" class="sb-avatar-sm"> &thinsp;${actingUser}`
+                ? `<img src="${actingAvatar}" class="sb-avatar-sm">&nbsp;${actingUser}`
                 : actingUser;
-            const actingHtml = formatActingUser(actingContent, actingUserColor);
+            const actingHtml = formatUsername(actingContent, actingUserColor);
             return { user, icon, actingUser, actingAvatar, html: `${userHtml} ${icon} ${actingHtml}` };
         }
         return { user, icon, actingUser: null, actingAvatar: null, html: `${userHtml} ${icon}` };
@@ -435,7 +437,8 @@
             if (layer) {
                 // Icon pop for likes/reactions
                 const isLikeOrReaction = action.action_type === 1 || typeof action.action_type === 'string';
-                if (isLikeOrReaction) {
+                const isSelfUser = State.selfUser && action.acting_username.toLowerCase() === State.selfUser.toLowerCase();
+                if (isLikeOrReaction && isSelfUser) {
                     const iconPop = document.createElement('div');
                     iconPop.className = 'dm-icon-pop';
                     iconPop.style.left = `${10 + Math.random() * 70}vw`;
@@ -465,7 +468,7 @@
                     ${excerpt ? `<div class="${excerptClass}">${excerpt}</div>` : ''}
                 `;
                 layer.appendChild(item);
-                // setTimeout(() => item.remove(), 16000);
+                setTimeout(() => item.remove(), 16000);
             }
         }
 
@@ -642,7 +645,6 @@
     });
 
     // --- UI 构建 ---
-
     function createUI() {
         const host = document.createElement('div');
         host.id = 'ld-seeking-host';
@@ -691,7 +693,8 @@
             const bar = shadowRoot.getElementById('ld-sidebar');
             bar.classList.toggle('collapsed');
             State.isCollapsed = bar.classList.contains('collapsed');
-            GM_setValue('ld_is_collapsed', State.isCollapsed);
+            // GM_setValue('ld_is_collapsed', State.isCollapsed);
+            sessionStorage.setItem('ld_is_collapsed', State.isCollapsed);
         };
 
         shadowRoot.getElementById('btn-dm').onclick = function() {
