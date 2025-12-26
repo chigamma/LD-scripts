@@ -91,8 +91,71 @@
         selfUser: getSelfUser(),
         currentUserIndex: 0,
         nextFetchTime: {},
+        userProfiles: {}, // Cache for user profile data (last_posted_at, last_seen_at)
         isLeader: false
     };
+
+    // Format time distance
+    function formatTimeAgo(isoTime) {
+        if (!isoTime) return '--';
+        const diff = Date.now() - new Date(isoTime).getTime();
+        if (diff < 0) return '0m0s';
+        const secs = Math.floor(diff / 1000);
+        const mins = Math.floor(secs / 60);
+        const hours = Math.floor(mins / 60);
+        const days = Math.floor(hours / 24);
+
+        if (days > 0) {
+            return `${days}d${hours % 24}h`;
+        } else if (hours > 0) {
+            return `${hours}h${mins % 60}m`;
+        } else if (mins > 0) {
+            return `${mins}m${secs % 60}s`;
+        } else {
+            return `${secs}s`;
+        }
+    }
+
+    // Get color based on recency
+    function getTimeAgoColor(isoTime, userColor) {
+        if (!isoTime) return '#666';
+        const diff = Date.now() - new Date(isoTime).getTime();
+        const maxTime = 12 * 60 * 60 * 1000;
+        const ratio = Math.min(1, Math.max(0, diff / maxTime));
+
+        // Parse userColor hex to RGB
+        const hex = userColor.replace('#', '');
+        const r1 = parseInt(hex.substr(0, 2), 16);
+        const g1 = parseInt(hex.substr(2, 2), 16);
+        const b1 = parseInt(hex.substr(4, 2), 16);
+
+        // Target color #ccc = rgb(204, 204, 204)
+        const r2 = 204, g2 = 204, b2 = 204;
+
+        // Interpolate
+        const r = Math.round(r1 + (r2 - r1) * ratio);
+        const g = Math.round(g1 + (g2 - g1) * ratio);
+        const b = Math.round(b1 + (b2 - b1) * ratio);
+
+        return `rgb(${r},${g},${b})`;
+    }
+
+    // Fetch user profile for activity times
+    async function fetchUserProfile(username) {
+        try {
+            const json = await safeFetch(`${CONFIG.HOST}/u/${username}.json`);
+            if (json && json.user) {
+                State.userProfiles[username] = {
+                    last_posted_at: json.user.last_posted_at,
+                    last_seen_at: json.user.last_seen_at
+                };
+                return true;
+            }
+        } catch (e) {
+            log(`Failed to fetch profile for ${username}`, 'error');
+        }
+        return false;
+    }
 
     function getUserColor(username) {
         const idx = State.users.indexOf(username);
@@ -171,19 +234,21 @@
         .sb-btn-add { background: #ffd700; color: #000; border: none; border-radius: 6px; width: 20.5px; padding: 1px; cursor: pointer; font-weight: bold; }
 
         .sb-tags { display: block; margin-top: 5px; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; overflow: hidden; }
-        .sb-user-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 2px; background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.05); border-left: 2px solid #989898; }
+        .sb-user-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 2px; background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.05); border-left: 3px solid #989898; }
         .sb-user-row:last-child { border-bottom: none; }
         .sb-user-row:hover { background: rgba(255,255,255,0.08); }
-        .sb-user-row.active { background: rgba(0, 212, 255, 0.1); border-left: 2px solid #ffd700; }
+        .sb-user-row.active { background: rgba(0, 212, 255, 0.1); border-left: 3px solid #ffd700; }
 
-        .sb-del { font-size: 12px; color: #666; cursor: pointer; margin: 0 0 1px 1px; line-height: 1; }
+        .sb-del { font-size: 12px; color: #666; cursor: pointer; margin: 0 2pt 1px 6px; line-height: 1; }
         .sb-del:hover { color: #ff5555; }
-        .sb-timer-circle { flex-shrink: 0; margin: 1px 2px 0 1px; }
+        .sb-timer-circle { flex-shrink: 0; margin: 1px 6px 0 2px; }
         .sb-timer-circle:hover { opacity: 0.8; }
 
         .sb-user-name { font-size: 11px; color: #ccc; cursor: pointer; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .sb-user-name.disabled { color: #666; }
         .sb-user-row.active .sb-user-name { color: #ffd700; font-weight: 600; }
+        .sb-user-activity { font-size: 9px; color: #888; display: flex; gap: 2px; margin: 0 6px; flex-shrink: 0; }
+        .sb-user-activity span { white-space: nowrap; width: 38px; text-align: right; font-family: monospace; }
 
         .sb-toggle { width: 24px; height: 12px; background: #333; border-radius: 6px; position: relative; cursor: pointer; transition: 0.2s; }
         .sb-toggle.on { background: #ffd700; }
@@ -549,6 +614,7 @@
         for (const user of State.users) {
             const updated = await processUser(user, true);
             if (updated) hasUpdates = true;
+            await fetchUserProfile(user);
             State.nextFetchTime[user] = now + (State.users.length * CONFIG.REFRESH_INTERVAL_MS);
         }
 
@@ -581,6 +647,7 @@
 
         const user = State.users[State.currentUserIndex];
         const hasUpdates = await processUser(user, false);
+        await fetchUserProfile(user);
         const nextTime = Date.now() + (State.users.length * CONFIG.REFRESH_INTERVAL_MS);
         State.nextFetchTime[user] = nextTime;
         State.currentUserIndex = (State.currentUserIndex + 1) % State.users.length;
@@ -782,7 +849,7 @@
         });
 
         renderTags();
-        updateTimers();
+        initUpdateQueues();
         log('Seeking Engine Started.', 'success');
 
         setInterval(() => tickOne(), CONFIG.REFRESH_INTERVAL_MS);
@@ -842,32 +909,126 @@
         State.isProcessing = false;
     }
 
-    // Timer update loop
-    function updateTimers() {
-        if (!shadowRoot) return;
+    // Timer update queues
+    const timerQueue = new Map();
+
+    function scheduleTimerUpdate(user) {
+        timerQueue.set(user, Date.now());
+    }
+
+    function runTimerQueue() {
+        if (!shadowRoot) return requestAnimationFrame(runTimerQueue);
         const now = Date.now();
         const totalInterval = State.users.length * CONFIG.REFRESH_INTERVAL_MS;
 
-        State.users.forEach(user => {
-            const timerEl = shadowRoot.getElementById(`timer-${user}`);
-            if (timerEl) {
-                const progressCircle = timerEl.querySelector('.timer-progress');
-                if (progressCircle) {
-                    const circumference = parseFloat(timerEl.getAttribute('data-circumference'));
-                    const next = State.nextFetchTime[user];
+        timerQueue.forEach((nextUpdate, user) => {
+            if (now >= nextUpdate) {
+                const timerEl = shadowRoot.getElementById(`timer-${user}`);
+                if (timerEl) {
+                    const progressCircle = timerEl.querySelector('.timer-progress');
+                    if (progressCircle) {
+                        const circumference = parseFloat(timerEl.getAttribute('data-circumference'));
+                        const next = State.nextFetchTime[user];
 
-                    if (next) {
-                        const remaining = Math.max(0, next - now);
-                        const progress = remaining / totalInterval;
-                        const offset = circumference * (1 - Math.min(1, progress));
-                        progressCircle.style.strokeDashoffset = offset;
-                    } else {
-                        progressCircle.style.strokeDashoffset = 0;
+                        if (next) {
+                            const remaining = Math.max(0, next - now);
+                            const progress = remaining / totalInterval;
+                            const offset = circumference * (1 - Math.min(1, progress));
+                            progressCircle.style.strokeDashoffset = offset;
+                        } else {
+                            progressCircle.style.strokeDashoffset = 0;
+                        }
                     }
                 }
+                timerQueue.set(user, now + 200);
             }
         });
-        requestAnimationFrame(updateTimers);
+        requestAnimationFrame(runTimerQueue);
+    }
+
+    const activityQueue = new Map();
+
+    function getNextActivityUpdate(isoTime) {
+        if (!isoTime) return 30 * 1000;
+        const diff = Date.now() - new Date(isoTime).getTime();
+        const mins = Math.floor(diff / 60000);
+        const hours = Math.floor(mins / 60);
+
+        if (hours > 0) {
+            return 30 * 1000;
+        } else {
+            return 1000;
+        }
+    }
+
+    function scheduleActivityUpdate(user) {
+        const profile = State.userProfiles[user];
+        const userData = State.data[user];
+
+        let minInterval = 30 * 1000;
+        if (profile?.last_posted_at) {
+            minInterval = Math.min(minInterval, getNextActivityUpdate(profile.last_posted_at));
+        }
+        if (profile?.last_seen_at) {
+            minInterval = Math.min(minInterval, getNextActivityUpdate(profile.last_seen_at));
+        }
+        if (userData?.[0]?.created_at) {
+            minInterval = Math.min(minInterval, getNextActivityUpdate(userData[0].created_at));
+        }
+
+        activityQueue.set(user, Date.now() + minInterval);
+    }
+
+    function runActivityQueue() {
+        if (!shadowRoot) return setTimeout(runActivityQueue, 100);
+        const now = Date.now();
+
+        activityQueue.forEach((nextUpdate, user) => {
+            if (now >= nextUpdate) {
+                const activityEl = shadowRoot.getElementById(`activity-${user}`);
+                if (!activityEl) return;
+
+                const isHidden = State.hiddenUsers.has(user);
+                const userColor = getUserColor(user);
+                const profile = State.userProfiles[user];
+                const userData = State.data[user];
+
+                if (profile) {
+                    const spans = activityEl.querySelectorAll('span');
+                    if (spans.length >= 3) {
+                        const postedAgo = profile.last_posted_at ? formatTimeAgo(profile.last_posted_at) : '--';
+                        const postedColor = isHidden ? '#666' : getTimeAgoColor(profile.last_posted_at, userColor);
+                        spans[0].textContent = postedAgo;
+                        spans[0].style.color = postedColor;
+
+                        let lastActionAgo = '--';
+                        if (userData && userData.length > 0 && userData[0].created_at) {
+                            lastActionAgo = formatTimeAgo(userData[0].created_at);
+                        }
+                        const actionColor = isHidden ? '#666' : getTimeAgoColor(userData?.[0]?.created_at, userColor);
+                        spans[1].textContent = lastActionAgo;
+                        spans[1].style.color = actionColor;
+
+                        const seenAgo = profile.last_seen_at ? formatTimeAgo(profile.last_seen_at) : '--';
+                        const seenColor = isHidden ? '#666' : getTimeAgoColor(profile.last_seen_at, userColor);
+                        spans[2].textContent = seenAgo;
+                        spans[2].style.color = seenColor;
+                    }
+                }
+                scheduleActivityUpdate(user);
+            }
+        });
+
+        setTimeout(runActivityQueue, 200);
+    }
+
+    function initUpdateQueues() {
+        State.users.forEach(user => {
+            scheduleTimerUpdate(user);
+            scheduleActivityUpdate(user);
+        });
+        runTimerQueue();
+        runActivityQueue();
     }
 
     function renderTags() {
@@ -925,6 +1086,33 @@
                 refreshSingleUser(u);
             };
 
+            // Activity info
+            const activityEl = document.createElement('div');
+            activityEl.className = 'sb-user-activity';
+            activityEl.id = `activity-${u}`;
+            const profile = State.userProfiles[u];
+
+            let lastActionAgo = '--';
+            const userData = State.data[u];
+            if (userData && userData.length > 0) {
+                const mostRecent = userData[0];
+                if (mostRecent.created_at) {
+                    lastActionAgo = formatTimeAgo(mostRecent.created_at);
+                }
+            }
+
+            if (profile) {
+                const postedAgo = profile.last_posted_at ? formatTimeAgo(profile.last_posted_at) : '--';
+                const postedColor = isHidden ? '#666' : getTimeAgoColor(profile.last_posted_at, userColor);
+                const actionColor = isHidden ? '#666' : getTimeAgoColor(userData?.[0]?.created_at, userColor);
+                const seenAgo = profile.last_seen_at ? formatTimeAgo(profile.last_seen_at) : '--';
+                const seenColor = isHidden ? '#666' : getTimeAgoColor(profile.last_seen_at, userColor);
+                activityEl.innerHTML = `<span title="最近发帖" style="color:${postedColor}">${postedAgo}</span><span title="最近动态" style="color:${actionColor}">${lastActionAgo}</span><span title="最近在线" style="color:${seenColor}">${seenAgo}</span>`;
+            } else {
+                activityEl.textContent = '...';
+                activityEl.style.color = '#666';
+            }
+
             // Name Area
             const nameEl = document.createElement('div');
             nameEl.className = `sb-user-name ${isHidden ? 'disabled' : ''}`;
@@ -933,10 +1121,11 @@
                 nameEl.style.color = userColor;
             }
 
-            // Order: controls first, then name
+            // Order: del, timer, name, activity
             row.appendChild(delBtn);
             row.appendChild(timerSvg);
             row.appendChild(nameEl);
+            row.appendChild(activityEl);
 
             // Click row to toggle visibility
             row.onclick = () => {
