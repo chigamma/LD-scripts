@@ -2,7 +2,7 @@
 // @name:en      Linux.do Like Counter
 // @name         Linux.do 点赞计数器
 // @namespace    https://linux.do/
-// @version      1.2.1
+// @version      1.3
 // @description:en  Tracks available likes/reactions on linux.do.
 // @description     显示 linux.do 上的可用点赞数。
 // @author       ChiGamma
@@ -27,7 +27,7 @@
     };
 
     const console = unsafeWindow.console;
-    let state = { timestamps: [], cooldownUntil: 0, lastSync: 0, matched: true };
+    let state = { timestamps: [], cooldownUntil: 0, lastSync: 0, matched: false };
     let currentUser = null;
     let uiUpdateTimer = null;
     let cooldownTicker = null;
@@ -42,7 +42,7 @@
                 state.timestamps = state.timestamps.slice(0, CONFIG.MAX_STORED_ITEMS);
             }
         } catch (e) {
-            state = { timestamps: [], cooldownUntil: 0, lastSync: 0, matched: true };
+            state = { timestamps: [], cooldownUntil: 0, lastSync: 0, matched: false };
         }
         cleanOldEntries();
     }
@@ -148,8 +148,8 @@
     GM_addStyle(`
         .ld-picker-counter { width: auto !important; box-sizing: border-box !important; text-align: center; margin: 0 3.5px !important; padding: 6px 0 4px 0; font-size: 0.85em; font-weight: 600; border-bottom: 1px solid var(--primary-low, #e9e9e9); border-top-left-radius: 8px; border-top-right-radius: 8px; display: flex !important; align-items: center !important; justify-content: center !important; }
         .ld-picker-counter.bg-ok { background-color: color-mix(in srgb, var(--secondary), #00F2FF 15%) !important; }
-        .ld-picker-counter.bg-cooldown { background-color: color-mix(in srgb, var(--secondary), #FF00E5 15%) !important; }
-        .ld-picker-counter.bg-mismatch { background-color: color-mix(in srgb, var(--secondary), #7000FF 15%) !important; }
+        .ld-picker-counter.bg-cooldown { background-color: color-mix(in srgb, var(--secondary), #FF3131 15%) !important; }
+        .ld-picker-counter.bg-mismatch { background-color: color-mix(in srgb, var(--secondary), #4D00FF 15%) !important; }
         .discourse-reactions-picker .discourse-reactions-picker-container { margin-top: 0 !important; border-top-left-radius: 0 !important; border-top-right-radius: 0 !important; }
         .ld-content-wrapper { display: flex !important; margin: 0 !important; align-items: center !important; gap: 6px !important; flex: 0 1 auto !important; }
 
@@ -327,6 +327,7 @@
              if(!currentUser) return;
         }
         const savedCooldown = state.cooldownUntil;
+        const savedMatched = state.matched;
         cleanOldEntries();
         const username = currentUser.username;
 
@@ -354,12 +355,24 @@
 
             const limit = CONFIG.LIMITS[currentUser.trust_level] || 50;
             const apiCount = dedupedTimestamps.length;
-            state.matched = (apiCount === limit);
+            if (savedMatched) {
+                state.matched = (apiCount <= limit);
+            } else {
+                state.matched = (apiCount === limit);
+            }
             if (savedCooldown > Date.now()) {
                 state.cooldownUntil = savedCooldown;
             }
 
             cleanOldEntries();
+            if (state.timestamps.length >= limit && state.cooldownUntil === 0) {
+                const oldestTs = Math.min(...state.timestamps);
+                const estimatedCooldown = oldestTs + 24 * 60 * 60 * 1000;
+                if (estimatedCooldown > Date.now()) {
+                    state.cooldownUntil = estimatedCooldown;
+                }
+            }
+
             saveState();
             requestUiUpdate(true);
         } catch (e) { console.error("[LikeCounter] Sync failed", e); }
