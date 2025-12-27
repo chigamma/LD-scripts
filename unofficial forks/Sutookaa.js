@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo追觅
 // @namespace    http://tampermonkey.net/
-// @version      3.2
+// @version      3.2.1
 // @description  在任何网页上实时监控 Linux.do 活动。
 // @author       ChiGamma
 // @match        https://linux.do/*
@@ -170,6 +170,20 @@
             hiddenUsers: Array.from(State.hiddenUsers)
         };
         GM_setValue('ld_v21_config', JSON.stringify(store));
+    }
+
+    function broadcastState() {
+        channel.postMessage({
+            type: 'data_update',
+            data: State.data,
+            lastIds: State.lastIds,
+            hiddenUsers: Array.from(State.hiddenUsers),
+            nextFetchTime: State.nextFetchTime,
+            multipliers: State.multipliers,
+            userProfiles: State.userProfiles,
+            users: State.users,
+            baseIntervals: State.baseIntervals
+        });
     }
 
     // --- 核心网络层 ---
@@ -531,7 +545,11 @@
 
     // Full query for all users (initial load and manual refresh)
     async function tickAll() {
-        if (!State.isLeader || State.isProcessing) return;
+        if (!State.isLeader) {
+            channel.postMessage({ type: 'cmd_refresh_all' });
+            return;
+        }
+        if (State.isProcessing) return;
         State.isProcessing = true;
         const dot = shadowRoot?.querySelector('.sb-status-dot');
         if (dot) dot.className = 'sb-status-dot loading';
@@ -547,15 +565,7 @@
         if (hasUpdates) saveConfig();
 
         renderFeed();
-        channel.postMessage({
-            type: 'data_update',
-            data: State.data,
-            lastIds: State.lastIds,
-            hiddenUsers: Array.from(State.hiddenUsers),
-            nextFetchTime: State.nextFetchTime,
-            multipliers: State.multipliers,
-            userProfiles: State.userProfiles
-        });
+        broadcastState();
 
         if (dot) dot.className = 'sb-status-dot ok';
         State.isProcessing = false;
@@ -577,15 +587,7 @@
         if (hasUpdates) saveConfig();
 
         renderFeed();
-        channel.postMessage({
-            type: 'data_update',
-            data: State.data,
-            lastIds: State.lastIds,
-            hiddenUsers: Array.from(State.hiddenUsers),
-            nextFetchTime: State.nextFetchTime,
-            multipliers: State.multipliers,
-            userProfiles: State.userProfiles
-        });
+        broadcastState();
         if (dot) dot.className = 'sb-status-dot ok';
         State.isProcessing = false;
     }
@@ -598,10 +600,17 @@
         const msg = event.data;
         if (msg.type === 'leader_check') { if (State.isLeader) channel.postMessage({ type: 'leader_here' }); }
         else if (msg.type === 'leader_here') { if (leaderCheckTimeout) { clearTimeout(leaderCheckTimeout); leaderCheckTimeout = null; } State.isLeader = false; channel.postMessage({ type: 'data_request' }); }
-        else if (msg.type === 'data_request') { if (State.isLeader) channel.postMessage({ type: 'data_update', data: State.data, lastIds: State.lastIds, hiddenUsers: Array.from(State.hiddenUsers), nextFetchTime: State.nextFetchTime, multipliers: State.multipliers, userProfiles: State.userProfiles }); }
+        else if (msg.type === 'data_request') { if (State.isLeader) broadcastState(); }
         else if (msg.type === 'leader_resign') { setTimeout(() => attemptLeadership(), Math.random() * 300); }
         else if (msg.type === 'data_update') {
             if (!State.isLeader) {
+                // Sync User List if changed
+                if (msg.users && JSON.stringify(msg.users) !== JSON.stringify(State.users)) {
+                    State.users = msg.users || [];
+                    State.baseIntervals = msg.baseIntervals || {};
+                    renderSidebarRows(); // Re-render sidebar if users changed
+                }
+
                 State.data = msg.data;
                 State.lastIds = msg.lastIds;
                 if(msg.hiddenUsers) State.hiddenUsers = new Set(msg.hiddenUsers);
@@ -612,6 +621,33 @@
             }
         }
         else if (msg.type === 'new_action') { if (!State.isLeader && State.enableDanmaku) sendNotification(msg.action); }
+        else if (msg.type === 'cmd_refresh_all') { if (State.isLeader) tickAll(); }
+        else if (msg.type === 'cmd_refresh_user') { if (State.isLeader) refreshSingleUser(msg.username); }
+        else if (msg.type === 'cmd_config_sync') {
+            if (msg.key === 'enableDanmaku') State.enableDanmaku = msg.value;
+            if (msg.key === 'enableSysNotify') State.enableSysNotify = msg.value;
+            saveConfig();
+            if (shadowRoot) {
+                const btn = shadowRoot.getElementById(msg.key === 'enableDanmaku' ? 'btn-dm' : 'btn-sys');
+                if (btn) btn.className = `sb-icon-btn ${msg.value?'active':''}`;
+            }
+        }
+        else if (msg.type === 'cmd_add_user') {
+            if (State.isLeader && !State.users.includes(msg.username)) {
+                fetchUser(msg.username, true).then(res => {
+                    if (res && res !== 'SKIPPED') {
+                        State.users.push(msg.username);
+                        State.baseIntervals[msg.username] = CONFIG.REFRESH_INTERVAL_MS;
+                        saveConfig();
+                        renderSidebarRows();
+                        tickAll();
+                    }
+                });
+            }
+        }
+        else if (msg.type === 'cmd_remove_user') {
+            if (State.isLeader) removeUser(msg.username);
+        }
     };
 
     function attemptLeadership() {
@@ -662,8 +698,20 @@
             sessionStorage.setItem('ld_is_collapsed', State.isCollapsed);
         };
 
-        shadowRoot.getElementById('btn-dm').onclick = function() { State.enableDanmaku = !State.enableDanmaku; this.className = `sb-icon-btn ${State.enableDanmaku?'active':''}`; saveConfig(); };
-        shadowRoot.getElementById('btn-sys').onclick = function() { State.enableSysNotify = !State.enableSysNotify; this.className = `sb-icon-btn ${State.enableSysNotify?'active':''}`; if (State.enableSysNotify && Notification.permission !== 'granted') Notification.requestPermission(); saveConfig(); };
+        shadowRoot.getElementById('btn-dm').onclick = function() {
+            State.enableDanmaku = !State.enableDanmaku;
+            this.className = `sb-icon-btn ${State.enableDanmaku?'active':''}`;
+            saveConfig();
+            channel.postMessage({ type: 'cmd_config_sync', key: 'enableDanmaku', value: State.enableDanmaku });
+        };
+
+        shadowRoot.getElementById('btn-sys').onclick = function() {
+            State.enableSysNotify = !State.enableSysNotify;
+            this.className = `sb-icon-btn ${State.enableSysNotify?'active':''}`;
+            if (State.enableSysNotify && Notification.permission !== 'granted') Notification.requestPermission();
+            saveConfig();
+            channel.postMessage({ type: 'cmd_config_sync', key: 'enableSysNotify', value: State.enableSysNotify });
+        };
         shadowRoot.getElementById('btn-refresh').onclick = () => tickAll();
 
         const handleAdd = async () => {
@@ -672,15 +720,24 @@
             if(!name || State.users.includes(name)) return;
             const btn = shadowRoot.getElementById('btn-add');
             btn.innerText = '...';
+
+            if (!State.isLeader) {
+                channel.postMessage({ type: 'cmd_add_user', username: name });
+                btn.innerText = '＋';
+                inp.value = '';
+                return;
+            }
+
             const test = await fetchUser(name, true);
             if(test && test !== 'SKIPPED') {
                 State.users.push(name);
-                State.baseIntervals[name] = CONFIG.REFRESH_INTERVAL_MS; saveConfig();
+                State.baseIntervals[name] = CONFIG.REFRESH_INTERVAL_MS;
+                saveConfig();
+                renderSidebarRows();
+                tickAll();
             }
             btn.innerText = '＋';
             inp.value = '';
-            renderSidebarRows();
-            tickAll();
         };
         shadowRoot.getElementById('btn-add').onclick = handleAdd;
         shadowRoot.getElementById('inp-user').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); handleAdd(); } });
@@ -692,31 +749,34 @@
     }
 
     function removeUser(name) {
+        if (!State.isLeader) {
+            channel.postMessage({ type: 'cmd_remove_user', username: name });
+            return;
+        }
         State.users = State.users.filter(u => u !== name);
         delete State.lastIds[name];
         delete State.baseIntervals[name];
         delete State.multipliers[name];
         saveConfig();
-        renderSidebarRows(); // Structure changed
+        renderSidebarRows();
         renderFeed();
+        broadcastState();
     }
 
     function toggleUserVisibility(name) {
         if (State.hiddenUsers.has(name)) State.hiddenUsers.delete(name);
         else State.hiddenUsers.add(name);
         saveConfig();
-        // Do not re-render structure, just update classes in the existing rows
+
         const row = shadowRoot.getElementById(`row-${name}`);
         if(row) {
             const isHidden = State.hiddenUsers.has(name);
             row.className = `sb-user-row ${isHidden ? '' : 'active'}`;
-            // Update children styles manually or via class mapping
             const nameEl = row.querySelector('.sb-user-name');
             if(nameEl) {
                 nameEl.className = `sb-user-name ${isHidden ? 'disabled' : ''}`;
                 nameEl.style.color = isHidden ? '' : getUserColor(name);
             }
-            // Trigger visual update for circles
             const timer = shadowRoot.getElementById(`timer-${name}`);
             if(timer) {
                 const circle = timer.querySelector('.timer-progress');
@@ -724,18 +784,14 @@
             }
         }
         renderFeed();
-        channel.postMessage({
-            type: 'data_update',
-            data: State.data,
-            lastIds: State.lastIds,
-            hiddenUsers: Array.from(State.hiddenUsers),
-            nextFetchTime: State.nextFetchTime,
-            multipliers: State.multipliers,
-            userProfiles: State.userProfiles
-        });
+        broadcastState();
     }
 
     async function refreshSingleUser(username) {
+        if (!State.isLeader) {
+            channel.postMessage({ type: 'cmd_refresh_user', username });
+            return;
+        }
         if (State.isProcessing) return;
         State.isProcessing = true;
         const dot = shadowRoot?.querySelector('.sb-status-dot');
@@ -744,15 +800,7 @@
         State.nextFetchTime[username] = Date.now() + getUserCycleDuration(username) + Math.random() * 10000;
         if (hasUpdates) saveConfig();
         renderFeed();
-        channel.postMessage({
-            type: 'data_update',
-            data: State.data,
-            lastIds: State.lastIds,
-            hiddenUsers: Array.from(State.hiddenUsers),
-            nextFetchTime: State.nextFetchTime,
-            multipliers: State.multipliers,
-            userProfiles: State.userProfiles
-        });
+        broadcastState();
         if (dot) dot.className = 'sb-status-dot ok';
         State.isProcessing = false;
     }
