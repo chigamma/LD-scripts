@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo追觅
 // @namespace    http://tampermonkey.net/
-// @version      3.1
+// @version      3.2
 // @description  在任何网页上实时监控 Linux.do 活动。
 // @author       ChiGamma
 // @match        https://linux.do/*
@@ -56,7 +56,6 @@
     // 注意：GM_getValue 是按域名存储的，要在所有网站共享数据很难（除非用云端）。
     // 这里的策略是：配置仅保存在当前域名下。
     // 如果需要全网同步配置，需要更复杂的技术（如 iframe 通信），这里暂保持单站独立配置，但代码结构支持扩展。
-
     function loadConfig() {
         try { return JSON.parse(GM_getValue('ld_v21_config', '{}')); }
         catch { return {}; }
@@ -81,6 +80,8 @@
     const State = {
         users: saved.users || [],
         lastIds: saved.lastIds || {},
+        baseIntervals: saved.baseIntervals || {},
+        multipliers: {},
         enableSysNotify: saved.enableSysNotify !== false,
         enableDanmaku: saved.enableDanmaku !== false,
         data: {},
@@ -95,7 +96,7 @@
         isLeader: false
     };
 
-    // Format time distance
+    // --- Time & Schedule Logic ---
     function formatTimeAgo(isoTime) {
         if (!isoTime) return '--';
         const diff = Date.now() - new Date(isoTime).getTime();
@@ -105,34 +106,24 @@
         const hours = Math.floor(mins / 60);
         const days = Math.floor(hours / 24);
 
-        if (days > 0) {
-            return `${days}d${hours % 24}h`;
-        } else if (hours > 0) {
-            return `${hours}h${mins % 60}m`;
-        } else if (mins > 0) {
-            return `${mins}m${secs % 60}s`;
-        } else {
-            return `${secs}s`;
-        }
+        if (days > 0) return `${days}d${hours % 24}h`;
+        if (hours > 0) return `${hours}h${mins % 60}m`;
+        if (mins > 0) return `${mins}m${secs % 60}s`;
+        return `${secs}s`;
     }
 
-    // Get color based on recency
     function getTimeAgoColor(isoTime, userColor) {
         if (!isoTime) return '#666';
         const diff = Date.now() - new Date(isoTime).getTime();
-        const maxTime = 12 * 60 * 60 * 1000;
+        const maxTime = 1 * 60 * 60 * 1000;
         const ratio = Math.min(1, Math.max(0, diff / maxTime));
 
-        // Parse userColor hex to RGB
         const hex = userColor.replace('#', '');
         const r1 = parseInt(hex.substr(0, 2), 16);
         const g1 = parseInt(hex.substr(2, 2), 16);
         const b1 = parseInt(hex.substr(4, 2), 16);
-
-        // Target color #ccc = rgb(204, 204, 204)
         const r2 = 204, g2 = 204, b2 = 204;
 
-        // Interpolate
         const r = Math.round(r1 + (r2 - r1) * ratio);
         const g = Math.round(g1 + (g2 - g1) * ratio);
         const b = Math.round(b1 + (b2 - b1) * ratio);
@@ -140,26 +131,28 @@
         return `rgb(${r},${g},${b})`;
     }
 
-    // Fetch user profile for activity times
-    async function fetchUserProfile(username) {
-        try {
-            const json = await safeFetch(`${CONFIG.HOST}/u/${username}.json`);
-            if (json && json.user) {
-                State.userProfiles[username] = {
-                    last_posted_at: json.user.last_posted_at,
-                    last_seen_at: json.user.last_seen_at
-                };
-                return true;
-            }
-        } catch (e) {
-            log(`Failed to fetch profile for ${username}`, 'error');
-        }
-        return false;
-    }
-
     function getUserColor(username) {
         const idx = State.users.indexOf(username);
         return nameColors[1 + idx % nameColors.length];
+    }
+
+    function getIntervalMultiplier(lastSeenAt) {
+        if (!lastSeenAt) return 20;
+        const diff = Date.now() - new Date(lastSeenAt).getTime();
+        const minutes = diff / (1000 * 60);
+        if (minutes < 2) return 1;
+        if (minutes < 5) return 1.5;
+        if (minutes < 10) return 2;
+        if (minutes < 60) return 3;
+        if (minutes < 120) return 5;
+        if (minutes < 720) return 10;
+        return 20;
+    }
+
+    function getUserCycleDuration(username) {
+        const base = State.baseIntervals[username] || CONFIG.REFRESH_INTERVAL_MS;
+        const mult = State.multipliers[username] || 1;
+        return base * mult;
     }
 
     // --- Cross-Tab BroadcastChannel ---
@@ -171,6 +164,7 @@
         const store = {
             users: State.users,
             lastIds: State.lastIds,
+            baseIntervals: State.baseIntervals,
             enableSysNotify: State.enableSysNotify,
             enableDanmaku: State.enableDanmaku,
             hiddenUsers: Array.from(State.hiddenUsers)
@@ -178,7 +172,7 @@
         GM_setValue('ld_v21_config', JSON.stringify(store));
     }
 
-    // --- 核心网络层 (突破跨域) ---
+    // --- 核心网络层 ---
     function safeFetch(url) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -190,21 +184,16 @@
                 },
                 onload: (response) => {
                     if (response.status >= 200 && response.status < 300) {
-                        try {
-                            resolve(JSON.parse(response.responseText));
-                        } catch (e) {
-                            reject(new Error("JSON Parse Error"));
-                        }
-                    } else {
-                        reject(new Error(`Status ${response.status}`));
-                    }
+                        try { resolve(JSON.parse(response.responseText)); }
+                        catch (e) { reject(new Error("JSON Parse Error")); }
+                    } else { reject(new Error(`Status ${response.status}`)); }
                 },
                 onerror: (err) => reject(err)
             });
         });
     }
 
-    // --- 样式 (注入 Shadow DOM) ---
+    // --- 样式 ---
     const css = `
         :host { all: initial; font-family: system-ui, -apple-system, sans-serif; font-size: 14px; z-index: 2147483647; position: fixed; top: 0; left: 0; pointer-events: none; width: 100vw; height: 100vh; }
 
@@ -249,18 +238,12 @@
         .sb-user-row.active .sb-user-name { color: #ffd700; font-weight: 600; }
         .sb-user-activity { font-size: 9px; color: #888; display: flex; gap: 2px; margin: 0 6px; flex-shrink: 0; }
         .sb-user-activity span { white-space: nowrap; width: 38px; text-align: right; font-family: monospace; }
-
-        .sb-toggle { width: 24px; height: 12px; background: #333; border-radius: 6px; position: relative; cursor: pointer; transition: 0.2s; }
-        .sb-toggle.on { background: #ffd700; }
-        .sb-toggle-dot { width: 8px; height: 8px; background: #fff; border-radius: 50%; position: absolute; top: 2px; left: 2px; transition: 0.2s; }
-        .sb-toggle.on .sb-toggle-dot { left: 14px; }
-
         /* 卡片列表 */
         .sb-list { flex: 1; padding: 8px; background: transparent; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #444 transparent; }
         .sb-list::-webkit-scrollbar { width: 4px; }
         .sb-list::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
 
-        .sb-card { display: flex; flex-direction: column; gap: 3px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 8px 6px 8px; margin-bottom: 8px; text-decoration: none; color: inherit; transition: 0.2s; position: relative; overflow: hidden; }
+        .sb-card { display: flex; flex-direction: column; gap: 3px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 8px 6px 8px; margin-bottom: 6px; text-decoration: none; color: inherit; transition: 0.2s; position: relative; overflow: hidden; }
         .sb-card:hover { transform: translateX(4px); background: rgba(255,255,255,0.06); border-color: #ffd700; }
 
         .sb-card-head { display: flex; align-items: flex-start; gap: 8px; font-size: 11px; color: #666; }
@@ -306,71 +289,48 @@
     `;
 
     // --- 逻辑处理 ---
-    async function fetchUser(username) {
+    async function fetchUser(username, isInitial = false) {
         try {
-            // Fetch user_actions
-            const url1 = `${CONFIG.HOST}/user_actions.json?offset=0&limit=${CONFIG.LOG_LIMIT_PER_USER}&username=${username}&filter=1,4,5`;
-            const json = await safeFetch(url1);
+            const profileJson = await safeFetch(`${CONFIG.HOST}/u/${username}.json`);
+            if (!profileJson || !profileJson.user) return [];
 
-            // Process user_actions: swap fields for type 1 (likes)
-            const actions = (json.user_actions || []).map(action => {
+            const newLastSeen = profileJson.user.last_seen_at;
+            const newLastPosted = profileJson.user.last_posted_at;
+            const oldProfile = State.userProfiles[username];
+
+            State.multipliers[username] = getIntervalMultiplier(newLastSeen);
+            const hasChanged = !oldProfile || oldProfile.last_seen_at !== newLastSeen;
+
+            State.userProfiles[username] = { last_posted_at: newLastPosted, last_seen_at: newLastSeen };
+
+            if (!isInitial && !hasChanged && State.data[username]?.length > 0) {
+                log(`User ${username} dormant, skipping.`, 'info');
+                return 'SKIPPED';
+            }
+
+            const [jsonActions, jsonReactions] = await Promise.all([
+                safeFetch(`${CONFIG.HOST}/user_actions.json?offset=0&limit=${CONFIG.LOG_LIMIT_PER_USER}&username=${username}&filter=1,4,5`),
+                safeFetch(`${CONFIG.HOST}/discourse-reactions/posts/reactions.json?username=${username}`)
+            ]);
+
+            const actions = (jsonActions.user_actions || []).map(action => {
                 if (action.action_type === 1) {
-                    // For likes: swap user and acting_user fields
-                    return {
-                        ...action,
-                        username: action.acting_username,
-                        name: action.acting_name,
-                        user_id: action.acting_user_id,
-                        avatar_template: action.acting_avatar_template,
-                        acting_username: action.username,
-                        acting_name: action.name,
-                        acting_user_id: action.user_id,
-                        acting_avatar_template: action.avatar_template,
-                    };
+                    return { ...action, username: action.acting_username, name: action.acting_name, user_id: action.acting_user_id, avatar_template: action.acting_avatar_template, acting_username: action.username, acting_name: action.name, acting_user_id: action.user_id, acting_avatar_template: action.avatar_template };
                 }
-                // Type 4 (new topic) and 5 (reply): keep as-is
                 return action;
             });
 
-            // Fetch reactions
-            // NOTE: the limit is fixed at 20
-            const url2 = `${CONFIG.HOST}/discourse-reactions/posts/reactions.json?username=${username}`;
-            const json2 = await safeFetch(url2);
-
-            // Transform reactions to match user_actions format
-            const reactions = (json2 || []).map(r => ({
-                // Core identifiers
-                id: r.id,
-                post_id: r.post_id,
-                created_at: r.created_at,
-                // User who made the reaction (acting user)
-                username: r.user?.username || '',
-                name: r.user?.name || '',
-                user_id: r.user_id,
-                avatar_template: r.user?.avatar_template || '',
-                // Post author (target of the reaction)
-                acting_username: r.post?.user?.username || r.post?.username || '',
-                acting_name: r.post?.user?.name || r.post?.name || '',
-                acting_user_id: r.post?.user_id || '',
-                acting_avatar_template: r.post?.user?.avatar_template || r.post?.avatar_template || '',
-                // Post/topic info
-                topic_id: r.post?.topic_id,
-                post_number: r.post?.post_number,
-                title: r.post?.topic_title || r.post?.topic?.title || '',
-                excerpt: r.post?.excerpt || '',
-                category_id: r.post?.category_id,
-                // Reaction-specific: use reaction_value as action indicator
-                action_type: r.reaction?.reaction_value || 'reaction',
-                reaction_value: r.reaction?.reaction_value
+            const reactions = (jsonReactions || []).map(r => ({
+                id: r.id, post_id: r.post_id, created_at: r.created_at,
+                username: r.user?.username || '', name: r.user?.name || '', user_id: r.user_id, avatar_template: r.user?.avatar_template || '',
+                acting_username: r.post?.user?.username || r.post?.username || '', acting_name: r.post?.user?.name || r.post?.name || '', acting_user_id: r.post?.user_id || '', acting_avatar_template: r.post?.user?.avatar_template || r.post?.avatar_template || '',
+                topic_id: r.post?.topic_id, post_number: r.post?.post_number, title: r.post?.topic_title || r.post?.topic?.title || '', excerpt: r.post?.excerpt || '', category_id: r.post?.category_id,
+                action_type: r.reaction?.reaction_value || 'reaction', reaction_value: r.reaction?.reaction_value
             }));
 
-            // Merge, sort by date, and return only most recent entries
-            const merged = [...actions, ...reactions]
-                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-                .slice(0, CONFIG.LOG_LIMIT_PER_USER);
-            return merged;
+            return [...actions, ...reactions].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, CONFIG.LOG_LIMIT_PER_USER);
         } catch (e) {
-            log(`Network Err ${username}: ${e.message}`, 'error');
+            log(`Err ${username}: ${e.message}`, 'error');
             return [];
         }
     }
@@ -385,13 +345,9 @@
         if (!html) return "";
         const tmp = document.createElement("div");
         tmp.innerHTML = html;
-        // 移除图片
         tmp.querySelectorAll('img').forEach(img => {
-            if (img.classList.contains('emoji')) {
-                img.replaceWith(img.alt);
-            } else {
-                img.remove();
-            }
+            if (img.classList.contains('emoji')) img.replaceWith(img.alt);
+            else img.remove();
         });
         return (tmp.textContent || tmp.innerText || "").replace(/\s+/g, ' ').trim();
     }
@@ -403,18 +359,14 @@
         const img = tmp.querySelector('img:not(.emoji)');
         if (!img) return null;
         let src = img.src;
-        // 修复相对链接
         if (src.startsWith('/')) src = CONFIG.HOST + src;
-        // 如果是同页面的引用 (Shadow DOM下 context 不同，最好补全)
         if (!src.startsWith('http')) {
-             // 尝试从 img attribute 直接拿
              const rawSrc = img.getAttribute('src');
              if (rawSrc && rawSrc.startsWith('/')) return CONFIG.HOST + rawSrc;
         }
         return src;
     }
 
-    // --- Unified Action Formatting ---
     function getActionIcon(actionType) {
         const ACTION_ICONS = {
             reply: '<svg class="fa d-icon d-icon-reply svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M8.309 189.836L184.313 37.851C199.719 24.546 224 35.347 224 56.015v80.053c160.629 1.839 288 34.032 288 186.258 0 61.441-39.581 122.309-83.333 154.132-13.653 9.931-33.111-2.533-28.077-18.631 45.344-145.012-21.507-183.51-176.59-185.742V360c0 20.7-24.3 31.453-39.687 18.164l-176.004-152c-11.071-9.562-11.086-26.753 0-36.328z"/></svg>',
@@ -429,61 +381,40 @@
         if (actionType === 5) return ACTION_ICONS.reply;
         if (actionType === 4) return ACTION_ICONS.post;
         if (actionType === 1) return ACTION_ICONS.like;
-        // For reactions (action_type is the reaction_value string like "laughing", "hugs")
         if (typeof actionType === 'string') {
             if (REACTION_ICONS[actionType]) return `<img src="${CONFIG.HOST}${REACTION_ICONS[actionType]}" class="action-emoji" alt=":${actionType}:">`;
             return `<img src="${CONFIG.HOST}/images/emoji/twemoji/${actionType}.png?v=15" class="action-emoji" alt=":${actionType}:">`;
         }
-        return ACTION_ICONS.reply; // fallback
+        return ACTION_ICONS.reply;
     }
 
-    // Get highlight color for a username
     function getUsernameColor(username) {
         if (!username) return null;
         const lower = username.toLowerCase();
-        // Current user gets gold color
-        if (State.selfUser && lower === State.selfUser.toLowerCase()) {
-            return nameColors[0];
-        }
-        // State.users get sequential colors from nameColors[1:]
+        if (State.selfUser && lower === State.selfUser.toLowerCase()) return nameColors[0];
         const userIndex = State.users.findIndex(u => u.toLowerCase() === lower);
-        if (userIndex !== -1 && userIndex + 1 < nameColors.length) {
-            return nameColors[userIndex + 1];
-        }
-        return null; // default color
+        if (userIndex !== -1 && userIndex + 1 < nameColors.length) return nameColors[userIndex + 1];
+        return null;
     }
 
     function formatActionInfo(action) {
         const icon = getActionIcon(action.action_type);
         const user = action.username || '';
         const actingUser = action.acting_username || '';
-        const actingAvatar = action.acting_avatar_template
-            ? CONFIG.HOST + action.acting_avatar_template.replace("{size}", "24")
-            : null;
-
-        // Get highlight colors
+        const actingAvatar = action.acting_avatar_template ? CONFIG.HOST + action.acting_avatar_template.replace("{size}", "24") : null;
         const userColor = getUsernameColor(user);
         const actingUserColor = getUsernameColor(actingUser);
-
-        // Format content with optional color
-        const formatUsername = (content, color) => color
-            ? `<span style="color:${color}; display: flex; align-items: center; gap: 1px;">${content}</span>`
-            : content;
-
+        const formatUsername = (content, color) => color ? `<span style="color:${color}; display: flex; align-items: center; gap: 1px;">${content}</span>` : content;
         const userHtml = formatUsername(user, userColor);
-
-        // Format: {user} {icon} {acting_user avatar + name (if available and different)}
         if (actingUser && actingUser !== user) {
-            const actingContent = actingAvatar
-                ? `<img src="${actingAvatar}" class="sb-avatar-sm">&nbsp;${actingUser}`
-                : actingUser;
+            const actingContent = actingAvatar ? `<img src="${actingAvatar}" class="sb-avatar-sm">&nbsp;${actingUser}` : actingUser;
             const actingHtml = formatUsername(actingContent, actingUserColor);
             return { user, icon, actingUser, actingAvatar, html: `${userHtml} ${icon} ${actingHtml}` };
         }
         return { user, icon, actingUser: null, actingAvatar: null, html: `${userHtml} ${icon}` };
     }
 
-    // --- Shadow DOM 操作 ---
+    // --- Shadow DOM & UI ---
     let shadowRoot;
 
     function log(msg, type='info') {
@@ -507,7 +438,6 @@
 
         let avatar = "https://linux.do/uploads/default/original/3X/9/d/9dd4973138ccd78e8907865261d7b14d45a96d1c.png";
         if (action.avatar_template) avatar = CONFIG.HOST + action.avatar_template.replace("{size}", "64");
-
         const excerpt = cleanHtml(action.excerpt);
         const link = `${CONFIG.HOST}/t/${action.topic_id}/${action.post_number}`;
 
@@ -528,10 +458,10 @@
                     setTimeout(() => iconPop.remove(), 3000);
                 }
 
-                // Regular flying danmaku
+                // Message danmaku
                 const item = document.createElement('div');
                 item.className = 'dm-item';
-                item.style.top = `${5 + Math.random() * 80}vh`; // 随机高度
+                item.style.top = `${5 + Math.random() * 80}vh`;
                 item.style.animationDuration = `${8 + Math.random() * 4}s`;
                 item.onclick = () => window.open(link, '_blank');
 
@@ -565,21 +495,20 @@
 
     // Process a single user's data and handle notifications
     async function processUser(user, isInitial = false) {
-        const actions = await fetchUser(user);
-        if (actions.length === 0) return false;
+        const result = await fetchUser(user, isInitial);
+        if (result === 'SKIPPED') return false;
+        const actions = result;
+        if (!actions || actions.length === 0) return false;
 
         const latest = actions[0];
         const latestId = getUniqueId(latest);
         const lastSavedId = State.lastIds[user];
-
         let hasUpdates = false;
 
         if (!lastSavedId) {
             State.lastIds[user] = latestId;
             hasUpdates = true;
-            // 初始化不弹幕，防止刷屏
         } else if (latestId !== lastSavedId && !isInitial) {
-            // 找出新消息
             const diff = [];
             for (let act of actions) {
                 if (getUniqueId(act) === lastSavedId) break;
@@ -589,7 +518,7 @@
                 log(`User ${user} has ${diff.length} new`, 'success');
                 diff.reverse().forEach((act, i) => setTimeout(() => {
                     sendNotification(act);
-                    broadcastNewAction(act); // Sync danmaku to other tabs
+                    broadcastNewAction(act);
                 }, i * 1000));
                 State.lastIds[user] = latestId;
                 hasUpdates = true;
@@ -604,179 +533,110 @@
     async function tickAll() {
         if (!State.isLeader || State.isProcessing) return;
         State.isProcessing = true;
-
         const dot = shadowRoot?.querySelector('.sb-status-dot');
         if (dot) dot.className = 'sb-status-dot loading';
 
         let hasUpdates = false;
         const now = Date.now();
-
         for (const user of State.users) {
+            if (!State.baseIntervals[user]) State.baseIntervals[user] = CONFIG.REFRESH_INTERVAL_MS;
             const updated = await processUser(user, true);
             if (updated) hasUpdates = true;
-            await fetchUserProfile(user);
-            State.nextFetchTime[user] = now + (State.users.length * CONFIG.REFRESH_INTERVAL_MS);
+            State.nextFetchTime[user] = now + getUserCycleDuration(user) + Math.random() * 10000;
         }
+        if (hasUpdates) saveConfig();
 
-        if (hasUpdates) {
-            saveConfig();
-        }
-        renderList();
-        renderTags();
-
-        // Broadcast update to other tabs
+        renderFeed();
         channel.postMessage({
             type: 'data_update',
             data: State.data,
             lastIds: State.lastIds,
             hiddenUsers: Array.from(State.hiddenUsers),
-            nextFetchTime: State.nextFetchTime
+            nextFetchTime: State.nextFetchTime,
+            multipliers: State.multipliers,
+            userProfiles: State.userProfiles
         });
 
         if (dot) dot.className = 'sb-status-dot ok';
         State.isProcessing = false;
     }
 
-    // Single user query (periodic rotation)
-    async function tickOne() {
+    async function scheduler() {
         if (!State.isLeader || State.isProcessing || State.users.length === 0) return;
-        State.isProcessing = true;
+        const now = Date.now();
+        const dueUsers = State.users.filter(u => !State.nextFetchTime[u] || now >= State.nextFetchTime[u]);
+        if (dueUsers.length === 0) return;
 
+        State.isProcessing = true;
+        const user = dueUsers[0];
         const dot = shadowRoot?.querySelector('.sb-status-dot');
         if (dot) dot.className = 'sb-status-dot loading';
 
-        const user = State.users[State.currentUserIndex];
         const hasUpdates = await processUser(user, false);
-        await fetchUserProfile(user);
-        const nextTime = Date.now() + (State.users.length * CONFIG.REFRESH_INTERVAL_MS);
-        State.nextFetchTime[user] = nextTime;
-        State.currentUserIndex = (State.currentUserIndex + 1) % State.users.length;
-
+        State.nextFetchTime[user] = Date.now() + getUserCycleDuration(user) + Math.random() * 10000;
         if (hasUpdates) saveConfig();
 
-        renderList();
-        renderTags();
-
+        renderFeed();
         channel.postMessage({
             type: 'data_update',
             data: State.data,
             lastIds: State.lastIds,
             hiddenUsers: Array.from(State.hiddenUsers),
-            nextFetchTime: State.nextFetchTime
+            nextFetchTime: State.nextFetchTime,
+            multipliers: State.multipliers,
+            userProfiles: State.userProfiles
         });
-
         if (dot) dot.className = 'sb-status-dot ok';
         State.isProcessing = false;
     }
 
-    // Broadcast new action for danmaku on all tabs
     function broadcastNewAction(action) {
         channel.postMessage({ type: 'new_action', action });
     }
 
-    // Handle incoming broadcast messages
     channel.onmessage = (event) => {
         const msg = event.data;
-        switch (msg.type) {
-            case 'leader_check':
-                // Another tab is checking for leader
-                if (State.isLeader) {
-                    channel.postMessage({ type: 'leader_here' });
-                }
-                break;
-            case 'leader_here':
-                // A leader already exists, cancel our attempt
-                if (leaderCheckTimeout) {
-                    clearTimeout(leaderCheckTimeout);
-                    leaderCheckTimeout = null;
-                }
-                State.isLeader = false;
-                log('Another tab is leader, following...', 'info');
-                // Request current data from leader
-                channel.postMessage({ type: 'data_request' });
-                break;
-            case 'data_request':
-                // Follower is requesting current data
-                if (State.isLeader && Object.keys(State.data).length > 0) {
-                    channel.postMessage({
-                        type: 'data_update',
-                        data: State.data,
-                        lastIds: State.lastIds,
-                        hiddenUsers: Array.from(State.hiddenUsers),
-                        nextFetchTime: State.nextFetchTime
-                    });
-                }
-                break;
-            case 'leader_resign':
-                // Leader resigned, try to become leader (with random delay to avoid race)
-                setTimeout(() => attemptLeadership(), Math.random() * 300);
-                break;
-            case 'data_update':
-                // Sync data from leader
-                if (!State.isLeader) {
-                    State.data = msg.data;
-                    State.lastIds = msg.lastIds;
-                    if(msg.hiddenUsers) State.hiddenUsers = new Set(msg.hiddenUsers);
-                    if(msg.nextFetchTime) State.nextFetchTime = msg.nextFetchTime;
-                    renderList();
-                    renderTags();
-                }
-                break;
-            case 'new_action':
-                // Show danmaku from leader's new action
-                if (!State.isLeader && State.enableDanmaku) {
-                    sendNotification(msg.action);
-                }
-                break;
+        if (msg.type === 'leader_check') { if (State.isLeader) channel.postMessage({ type: 'leader_here' }); }
+        else if (msg.type === 'leader_here') { if (leaderCheckTimeout) { clearTimeout(leaderCheckTimeout); leaderCheckTimeout = null; } State.isLeader = false; channel.postMessage({ type: 'data_request' }); }
+        else if (msg.type === 'data_request') { if (State.isLeader) channel.postMessage({ type: 'data_update', data: State.data, lastIds: State.lastIds, hiddenUsers: Array.from(State.hiddenUsers), nextFetchTime: State.nextFetchTime, multipliers: State.multipliers, userProfiles: State.userProfiles }); }
+        else if (msg.type === 'leader_resign') { setTimeout(() => attemptLeadership(), Math.random() * 300); }
+        else if (msg.type === 'data_update') {
+            if (!State.isLeader) {
+                State.data = msg.data;
+                State.lastIds = msg.lastIds;
+                if(msg.hiddenUsers) State.hiddenUsers = new Set(msg.hiddenUsers);
+                if(msg.nextFetchTime) State.nextFetchTime = msg.nextFetchTime;
+                if(msg.multipliers) State.multipliers = msg.multipliers;
+                if(msg.userProfiles) State.userProfiles = msg.userProfiles;
+                renderFeed();
+            }
         }
+        else if (msg.type === 'new_action') { if (!State.isLeader && State.enableDanmaku) sendNotification(msg.action); }
     };
 
-    // Attempt to become the leader
     function attemptLeadership() {
         channel.postMessage({ type: 'leader_check' });
-        leaderCheckTimeout = setTimeout(() => {
-            // No response, become leader
-            State.isLeader = true;
-            log('This tab is now the leader', 'success');
-            leaderCheckTimeout = null;
-            // Leader starts fetching data
-            tickAll();
-        }, 200);
+        leaderCheckTimeout = setTimeout(() => { State.isLeader = true; leaderCheckTimeout = null; tickAll(); }, 200);
     }
-
-    // Resign leadership when tab closes
-    window.addEventListener('beforeunload', () => {
-        if (State.isLeader) {
-            channel.postMessage({ type: 'leader_resign' });
-        }
-    });
+    window.addEventListener('beforeunload', () => { if (State.isLeader) channel.postMessage({ type: 'leader_resign' }); });
 
     // --- UI 构建 ---
     function createUI() {
         const host = document.createElement('div');
         host.id = 'ld-seeking-host';
         document.body.appendChild(host);
-
-        // 创建 Shadow DOM
         shadowRoot = host.attachShadow({ mode: 'open' });
-
-        // 注入 CSS
         const style = document.createElement('style');
         style.textContent = css;
         shadowRoot.appendChild(style);
-
-        // 注入 HTML
         const container = document.createElement('div');
-        // Shadow DOM 内部结构
         container.innerHTML = `
             <div id="dm-container" class="dm-container"></div>
             <div id="ld-sidebar" class="${State.isCollapsed ? 'collapsed' : ''}">
                 <div id="ld-toggle-ball" title="切换侧边栏">👀</div>
                 <div class="sb-header">
                     <div class="sb-title-row">
-                        <div class="sb-title">
-                            <div class="sb-status-dot ok"></div> 追觅 · Seeking
-                        </div>
+                        <div class="sb-title"><div class="sb-status-dot ok"></div> 追觅 · Seeking</div>
                         <div class="sb-tools">
                             <button id="btn-dm" class="sb-icon-btn ${State.enableDanmaku?'active':''}" title="弹幕">💬</button>
                             <button id="btn-sys" class="sb-icon-btn ${State.enableSysNotify?'active':''}" title="通知">🔔</button>
@@ -791,11 +651,9 @@
                 </div>
                 <div id="sb-list" class="sb-list"></div>
                 <div id="sb-console" class="sb-console"></div>
-            </div>
-        `;
+            </div>`;
         shadowRoot.appendChild(container);
 
-        // 事件绑定
         shadowRoot.getElementById('ld-toggle-ball').onclick = () => {
             const bar = shadowRoot.getElementById('ld-sidebar');
             bar.classList.toggle('collapsed');
@@ -804,252 +662,195 @@
             sessionStorage.setItem('ld_is_collapsed', State.isCollapsed);
         };
 
-        shadowRoot.getElementById('btn-dm').onclick = function() {
-            State.enableDanmaku = !State.enableDanmaku;
-            this.className = `sb-icon-btn ${State.enableDanmaku?'active':''}`;
-            saveConfig();
-        };
-
-        shadowRoot.getElementById('btn-sys').onclick = function() {
-            State.enableSysNotify = !State.enableSysNotify;
-            this.className = `sb-icon-btn ${State.enableSysNotify?'active':''}`;
-            if (State.enableSysNotify && Notification.permission !== 'granted') Notification.requestPermission();
-            saveConfig();
-        };
-
+        shadowRoot.getElementById('btn-dm').onclick = function() { State.enableDanmaku = !State.enableDanmaku; this.className = `sb-icon-btn ${State.enableDanmaku?'active':''}`; saveConfig(); };
+        shadowRoot.getElementById('btn-sys').onclick = function() { State.enableSysNotify = !State.enableSysNotify; this.className = `sb-icon-btn ${State.enableSysNotify?'active':''}`; if (State.enableSysNotify && Notification.permission !== 'granted') Notification.requestPermission(); saveConfig(); };
         shadowRoot.getElementById('btn-refresh').onclick = () => tickAll();
 
         const handleAdd = async () => {
             const inp = shadowRoot.getElementById('inp-user');
             const name = inp.value.trim();
             if(!name || State.users.includes(name)) return;
-
             const btn = shadowRoot.getElementById('btn-add');
             btn.innerText = '...';
-
-            // 尝试获取一次以验证
-            const test = await fetchUser(name);
-            State.users.push(name);
-            saveConfig();
-
+            const test = await fetchUser(name, true);
+            if(test && test !== 'SKIPPED') {
+                State.users.push(name);
+                State.baseIntervals[name] = CONFIG.REFRESH_INTERVAL_MS; saveConfig();
+            }
             btn.innerText = '＋';
             inp.value = '';
-            renderTags();
+            renderSidebarRows();
             tickAll();
         };
-
         shadowRoot.getElementById('btn-add').onclick = handleAdd;
+        shadowRoot.getElementById('inp-user').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); handleAdd(); } });
 
-        const inp = shadowRoot.getElementById('inp-user');
-        inp.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                handleAdd();
-            }
-        });
-
-        renderTags();
-        initUpdateQueues();
+        renderSidebarRows();
+        startVisualLoops();
         log('Seeking Engine Started.', 'success');
-
-        setInterval(() => tickOne(), CONFIG.REFRESH_INTERVAL_MS);
+        setInterval(() => scheduler(), 1000);
     }
 
     function removeUser(name) {
         State.users = State.users.filter(u => u !== name);
         delete State.lastIds[name];
+        delete State.baseIntervals[name];
+        delete State.multipliers[name];
         saveConfig();
-        renderTags();
-        renderList();
+        renderSidebarRows(); // Structure changed
+        renderFeed();
     }
 
     function toggleUserVisibility(name) {
-        if (State.hiddenUsers.has(name)) {
-            State.hiddenUsers.delete(name);
-        } else {
-            State.hiddenUsers.add(name);
-        }
+        if (State.hiddenUsers.has(name)) State.hiddenUsers.delete(name);
+        else State.hiddenUsers.add(name);
         saveConfig();
-        renderTags();
-        renderList();
+        // Do not re-render structure, just update classes in the existing rows
+        const row = shadowRoot.getElementById(`row-${name}`);
+        if(row) {
+            const isHidden = State.hiddenUsers.has(name);
+            row.className = `sb-user-row ${isHidden ? '' : 'active'}`;
+            // Update children styles manually or via class mapping
+            const nameEl = row.querySelector('.sb-user-name');
+            if(nameEl) {
+                nameEl.className = `sb-user-name ${isHidden ? 'disabled' : ''}`;
+                nameEl.style.color = isHidden ? '' : getUserColor(name);
+            }
+            // Trigger visual update for circles
+            const timer = shadowRoot.getElementById(`timer-${name}`);
+            if(timer) {
+                const circle = timer.querySelector('.timer-progress');
+                if(circle) circle.setAttribute('stroke', isHidden ? '#666' : getUserColor(name));
+            }
+        }
+        renderFeed();
         channel.postMessage({
             type: 'data_update',
             data: State.data,
             lastIds: State.lastIds,
             hiddenUsers: Array.from(State.hiddenUsers),
-            nextFetchTime: State.nextFetchTime
+            nextFetchTime: State.nextFetchTime,
+            multipliers: State.multipliers,
+            userProfiles: State.userProfiles
         });
     }
 
-    // Refresh a single user immediately when timer is clicked
     async function refreshSingleUser(username) {
         if (State.isProcessing) return;
         State.isProcessing = true;
-
         const dot = shadowRoot?.querySelector('.sb-status-dot');
         if (dot) dot.className = 'sb-status-dot loading';
-
         const hasUpdates = await processUser(username, false);
-        // Fix: Reset timer countdown after refresh
-        State.nextFetchTime[username] = Date.now() + (State.users.length * CONFIG.REFRESH_INTERVAL_MS);
-
+        State.nextFetchTime[username] = Date.now() + getUserCycleDuration(username) + Math.random() * 10000;
         if (hasUpdates) saveConfig();
-        renderList();
-        renderTags();
-
+        renderFeed();
         channel.postMessage({
             type: 'data_update',
             data: State.data,
             lastIds: State.lastIds,
             hiddenUsers: Array.from(State.hiddenUsers),
-            nextFetchTime: State.nextFetchTime
+            nextFetchTime: State.nextFetchTime,
+            multipliers: State.multipliers,
+            userProfiles: State.userProfiles
         });
-
         if (dot) dot.className = 'sb-status-dot ok';
         State.isProcessing = false;
     }
 
-    // Timer update queues
-    const timerQueue = new Map();
+    // --- Optimized Visual Loops ---
+    function startVisualLoops() {
+        // High Frequency: Timer Circles (Animation Frame)
+        const updateTimers = () => {
+            if (!shadowRoot) return;
+            const now = Date.now();
+            State.users.forEach(u => {
+                const timerEl = shadowRoot.getElementById(`timer-${u}`);
+                if (!timerEl) return;
+                const progressCircle = timerEl.querySelector('.timer-progress');
+                if (!progressCircle) return;
 
-    function scheduleTimerUpdate(user) {
-        timerQueue.set(user, Date.now());
-    }
+                const next = State.nextFetchTime[u];
+                const totalDuration = getUserCycleDuration(u);
+                const circumference = parseFloat(timerEl.getAttribute('data-circumference'));
 
-    function runTimerQueue() {
-        if (!shadowRoot) return requestAnimationFrame(runTimerQueue);
-        const now = Date.now();
-        const totalInterval = State.users.length * CONFIG.REFRESH_INTERVAL_MS;
+                if (next) {
+                    const remaining = Math.max(0, next - now);
+                    const progress = Math.min(1, Math.max(0, remaining / totalDuration));
+                    const offset = circumference * (1 - progress);
+                    progressCircle.style.strokeDashoffset = offset;
+                } else {
+                    progressCircle.style.strokeDashoffset = 0;
+                }
+            });
+            requestAnimationFrame(updateTimers);
+        };
+        requestAnimationFrame(updateTimers);
 
-        timerQueue.forEach((nextUpdate, user) => {
-            if (now >= nextUpdate) {
-                const timerEl = shadowRoot.getElementById(`timer-${user}`);
+        // Low Frequency: Text & Tooltip Updates (1s Interval)
+        setInterval(() => {
+            if (!shadowRoot) return;
+            State.users.forEach(u => {
+                const timerEl = shadowRoot.getElementById(`timer-${u}`);
                 if (timerEl) {
-                    const progressCircle = timerEl.querySelector('.timer-progress');
-                    if (progressCircle) {
-                        const circumference = parseFloat(timerEl.getAttribute('data-circumference'));
-                        const next = State.nextFetchTime[user];
-
-                        if (next) {
-                            const remaining = Math.max(0, next - now);
-                            const progress = remaining / totalInterval;
-                            const offset = circumference * (1 - Math.min(1, progress));
-                            progressCircle.style.strokeDashoffset = offset;
-                        } else {
-                            progressCircle.style.strokeDashoffset = 0;
+                    const titleEl = timerEl.querySelector('title');
+                    if (titleEl) {
+                        const duration = getUserCycleDuration(u);
+                        const timerTitle = `刷新间隔：${(duration / 1000).toFixed(0)}s`;
+                        if (titleEl.textContent !== timerTitle) {
+                            titleEl.textContent = timerTitle;
                         }
                     }
                 }
-                timerQueue.set(user, now + 200);
-            }
-        });
-        requestAnimationFrame(runTimerQueue);
-    }
 
-    const activityQueue = new Map();
-
-    function getNextActivityUpdate(isoTime) {
-        if (!isoTime) return 30 * 1000;
-        const diff = Date.now() - new Date(isoTime).getTime();
-        const mins = Math.floor(diff / 60000);
-        const hours = Math.floor(mins / 60);
-
-        if (hours > 0) {
-            return 30 * 1000;
-        } else {
-            return 1000;
-        }
-    }
-
-    function scheduleActivityUpdate(user) {
-        const profile = State.userProfiles[user];
-        const userData = State.data[user];
-
-        let minInterval = 30 * 1000;
-        if (profile?.last_posted_at) {
-            minInterval = Math.min(minInterval, getNextActivityUpdate(profile.last_posted_at));
-        }
-        if (profile?.last_seen_at) {
-            minInterval = Math.min(minInterval, getNextActivityUpdate(profile.last_seen_at));
-        }
-        if (userData?.[0]?.created_at) {
-            minInterval = Math.min(minInterval, getNextActivityUpdate(userData[0].created_at));
-        }
-
-        activityQueue.set(user, Date.now() + minInterval);
-    }
-
-    function runActivityQueue() {
-        if (!shadowRoot) return setTimeout(runActivityQueue, 100);
-        const now = Date.now();
-
-        activityQueue.forEach((nextUpdate, user) => {
-            if (now >= nextUpdate) {
-                const activityEl = shadowRoot.getElementById(`activity-${user}`);
+                const activityEl = shadowRoot.getElementById(`activity-${u}`);
                 if (!activityEl) return;
-
-                const isHidden = State.hiddenUsers.has(user);
-                const userColor = getUserColor(user);
-                const profile = State.userProfiles[user];
-                const userData = State.data[user];
+                const isHidden = State.hiddenUsers.has(u);
+                const userColor = getUserColor(u);
+                const profile = State.userProfiles[u];
+                const userData = State.data[u];
 
                 if (profile) {
                     const spans = activityEl.querySelectorAll('span');
                     if (spans.length >= 3) {
-                        const postedAgo = profile.last_posted_at ? formatTimeAgo(profile.last_posted_at) : '--';
-                        const postedColor = isHidden ? '#666' : getTimeAgoColor(profile.last_posted_at, userColor);
-                        spans[0].textContent = postedAgo;
-                        spans[0].style.color = postedColor;
+                        const postedIso = profile.last_posted_at;
+                        const actionIso = userData?.[0]?.created_at;
+                        const seenIso = profile.last_seen_at;
 
-                        let lastActionAgo = '--';
-                        if (userData && userData.length > 0 && userData[0].created_at) {
-                            lastActionAgo = formatTimeAgo(userData[0].created_at);
-                        }
-                        const actionColor = isHidden ? '#666' : getTimeAgoColor(userData?.[0]?.created_at, userColor);
-                        spans[1].textContent = lastActionAgo;
-                        spans[1].style.color = actionColor;
+                        const postedAgo = postedIso ? formatTimeAgo(postedIso) : '--';
+                        if (spans[0].textContent !== postedAgo) spans[0].textContent = postedAgo;
+                        spans[0].style.color = isHidden ? '#666' : getTimeAgoColor(postedIso, userColor);
 
-                        const seenAgo = profile.last_seen_at ? formatTimeAgo(profile.last_seen_at) : '--';
-                        const seenColor = isHidden ? '#666' : getTimeAgoColor(profile.last_seen_at, userColor);
-                        spans[2].textContent = seenAgo;
-                        spans[2].style.color = seenColor;
+                        const lastActionAgo = actionIso ? formatTimeAgo(actionIso) : '--';
+                        if (spans[1].textContent !== lastActionAgo) spans[1].textContent = lastActionAgo;
+                        spans[1].style.color = isHidden ? '#666' : getTimeAgoColor(actionIso, userColor);
+
+                        const seenAgo = seenIso ? formatTimeAgo(seenIso) : '--';
+                        if (spans[2].textContent !== seenAgo) spans[2].textContent = seenAgo;
+                        spans[2].style.color = isHidden ? '#666' : getTimeAgoColor(seenIso, userColor);
                     }
                 }
-                scheduleActivityUpdate(user);
-            }
-        });
-
-        setTimeout(runActivityQueue, 200);
+            });
+        }, 1000);
     }
 
-    function initUpdateQueues() {
-        State.users.forEach(user => {
-            scheduleTimerUpdate(user);
-            scheduleActivityUpdate(user);
-        });
-        runTimerQueue();
-        runActivityQueue();
-    }
-
-    function renderTags() {
+    // Renders the static structure of sidebar rows. Called ONLY on structure change (add/remove user).
+    function renderSidebarRows() {
         if (!shadowRoot) return;
         const div = shadowRoot.getElementById('sb-tags');
         div.innerHTML = '';
 
-        // User Rows
         State.users.forEach(u => {
             const isHidden = State.hiddenUsers.has(u);
             const userColor = getUserColor(u);
-            const highlightColor = nameColors[0]; // Gold for row highlight
+            const highlightColor = nameColors[0];
             const row = document.createElement('div');
+            row.id = `row-${u}`;
             row.className = `sb-user-row ${isHidden ? '' : 'active'}`;
-            // Apply highlight color for active rows background/border, user color for text
             if (!isHidden) {
                 row.style.borderLeftColor = highlightColor;
                 row.style.background = `${highlightColor}15`;
             }
 
-            // Delete Btn
             const delBtn = document.createElement('div');
             delBtn.className = 'sb-del';
             delBtn.textContent = '×';
@@ -1059,9 +860,7 @@
                 removeUser(u);
             };
 
-            // Timer
-            const timerSize = 10;
-            const timerStroke = 2;
+            const timerSize = 10, timerStroke = 2;
             const timerRadius = (timerSize - timerStroke) / 2;
             const timerCircum = 2 * Math.PI * timerRadius;
 
@@ -1073,6 +872,7 @@
             timerSvg.style.cursor = 'pointer';
             timerSvg.setAttribute('data-circumference', timerCircum);
             timerSvg.innerHTML = `
+                <title>刷新间隔</title>
                 <circle cx="${timerSize/2}" cy="${timerSize/2}" r="${timerRadius}"
                     fill="none" stroke="#333" stroke-width="${timerStroke}"/>
                 <circle class="timer-progress" cx="${timerSize/2}" cy="${timerSize/2}" r="${timerRadius}"
@@ -1080,73 +880,35 @@
                     stroke-dasharray="${timerCircum}" stroke-dashoffset="${timerCircum}"
                     transform="rotate(-90 ${timerSize/2} ${timerSize/2})"/>
             `;
-            timerSvg.title = '刷新时间';
             timerSvg.onclick = (e) => {
                 e.stopPropagation();
                 refreshSingleUser(u);
             };
 
-            // Activity info
             const activityEl = document.createElement('div');
             activityEl.className = 'sb-user-activity';
             activityEl.id = `activity-${u}`;
-            const profile = State.userProfiles[u];
+            activityEl.innerHTML = `<span title="最近发帖">--</span><span title="最近动态">--</span><span title="最近在线">--</span>`;
 
-            let lastActionAgo = '--';
-            const userData = State.data[u];
-            if (userData && userData.length > 0) {
-                const mostRecent = userData[0];
-                if (mostRecent.created_at) {
-                    lastActionAgo = formatTimeAgo(mostRecent.created_at);
-                }
-            }
-
-            if (profile) {
-                const postedAgo = profile.last_posted_at ? formatTimeAgo(profile.last_posted_at) : '--';
-                const postedColor = isHidden ? '#666' : getTimeAgoColor(profile.last_posted_at, userColor);
-                const actionColor = isHidden ? '#666' : getTimeAgoColor(userData?.[0]?.created_at, userColor);
-                const seenAgo = profile.last_seen_at ? formatTimeAgo(profile.last_seen_at) : '--';
-                const seenColor = isHidden ? '#666' : getTimeAgoColor(profile.last_seen_at, userColor);
-                activityEl.innerHTML = `<span title="最近发帖" style="color:${postedColor}">${postedAgo}</span><span title="最近动态" style="color:${actionColor}">${lastActionAgo}</span><span title="最近在线" style="color:${seenColor}">${seenAgo}</span>`;
-            } else {
-                activityEl.textContent = '...';
-                activityEl.style.color = '#666';
-            }
-
-            // Name Area
             const nameEl = document.createElement('div');
             nameEl.className = `sb-user-name ${isHidden ? 'disabled' : ''}`;
             nameEl.textContent = u;
-            if (!isHidden) {
-                nameEl.style.color = userColor;
-            }
+            if (!isHidden) nameEl.style.color = userColor;
 
-            // Order: del, timer, name, activity
             row.appendChild(delBtn);
             row.appendChild(timerSvg);
             row.appendChild(nameEl);
             row.appendChild(activityEl);
-
-            // Click row to toggle visibility
-            row.onclick = () => {
-                toggleUserVisibility(u);
-            };
-
+            row.onclick = () => toggleUserVisibility(u);
             div.appendChild(row);
         });
     }
 
-    function renderList() {
+    function renderFeed() {
         if (!shadowRoot) return;
         const div = shadowRoot.getElementById('sb-list');
         let all = [];
-
-        Object.entries(State.data).forEach(([user, arr]) => {
-            if (!State.hiddenUsers.has(user)) {
-                all.push(...arr);
-            }
-        });
-
+        Object.entries(State.data).forEach(([user, arr]) => { if (!State.hiddenUsers.has(user)) all.push(...arr); });
         all.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
 
         if (all.length === 0) {
@@ -1154,24 +916,19 @@
             return;
         }
 
+        // Batch Render: Construct 1 big HTML string
         div.innerHTML = all.map(item => {
             let avatar = "https://linux.do/uploads/default/original/3X/9/d/9dd4973138ccd78e8907865261d7b14d45a96d1c.png";
             if(item.avatar_template) avatar = CONFIG.HOST + item.avatar_template.replace("{size}", "48");
 
             const date = new Date(item.created_at);
             const now = new Date();
-            const timeStr = date.toDateString() === now.toDateString()
-                ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
-                : date.getFullYear() === now.getFullYear()
-                    ? date.toLocaleString('en-US', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
-                    : date.toLocaleString('en-US', { month: 'short', day: '2-digit', year: '2-digit' });
+            const timeStr = date.toDateString() === now.toDateString() ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : date.toLocaleString('en-US', { month: 'short', day: '2-digit' });
             const catName = categoryMap.get(item.category_id) || "未分区";
             const catColor = categoryColors[catName] || "#9e9e9e";
-
             const excerpt = cleanHtml(item.excerpt);
             const imgUrl = extractImg(item.excerpt);
             const link = `${CONFIG.HOST}/t/${item.topic_id}/${item.post_number}`;
-
             const actionInfo = formatActionInfo(item);
             const excerptClass = (item.action_type === 4 || item.action_type === 5) ? 'sb-card-excerpt' : 'sb-card-excerpt-cited';
             return `
@@ -1194,8 +951,6 @@
         }).join('');
     }
 
-    // 启动
     attemptLeadership();
     createUI();
-
 })();
