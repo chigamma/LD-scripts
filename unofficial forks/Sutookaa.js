@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         LinuxDo追觅
-// @namespace    http://tampermonkey.net/
+// @namespace    https://linux.do/
 // @version      3.2.1
-// @description  在任何网页上实时监控 Linux.do 活动。
+// @description  在网页上实时监控 Linux.do 活动。
 // @author       ChiGamma
+// @license      Fair License
 // @match        https://linux.do/*
 // @connect      linux.do
 // @icon         https://linux.do/uploads/default/original/3X/9/d/9dd4973138ccd78e8907865261d7b14d45a96d1c.png
@@ -26,10 +27,14 @@
         MAX_USERS: 5,
         SIDEBAR_WIDTH: '300px',
         REFRESH_INTERVAL_MS: 60 * 1000,
-        LOG_LIMIT_PER_USER: 15,
+        LOG_LIMIT_PER_USER: 10,
         HOST: 'https://linux.do'
     };
-    const nameColors = ["#ffd700", "#00d4ff", "#ff6b6b", "#4d5ef7ff", "#c77dff", "#00ff88", "#f87ecaff"];
+    const nameColors = [
+        // 用户自己主题色
+        "#ffd700",
+        // 关注用户主题色
+        "#00d4ff", "#ff6b6b", "#4d5ef7ff", "#c77dff", "#00ff88", "#f87ecaff"];
 
     // --- 类别定义 ---
     const categoryColors = {
@@ -80,7 +85,6 @@
     const State = {
         users: saved.users || [],
         lastIds: saved.lastIds || {},
-        baseIntervals: saved.baseIntervals || {},
         multipliers: {},
         enableSysNotify: saved.enableSysNotify !== false,
         enableDanmaku: saved.enableDanmaku !== false,
@@ -90,9 +94,8 @@
         isProcessing: false,
         hiddenUsers: new Set(saved.hiddenUsers || []),
         selfUser: getSelfUser(),
-        currentUserIndex: 0,
         nextFetchTime: {},
-        userProfiles: {}, // Cache for user profile data (last_posted_at, last_seen_at)
+        userProfiles: {},
         isLeader: false
     };
 
@@ -137,22 +140,23 @@
     }
 
     function getIntervalMultiplier(lastSeenAt) {
-        if (!lastSeenAt) return 20;
+        const collapsedMult = State.isCollapsed ? 2 : 1;
+        if (!lastSeenAt) return 20 * collapsedMult;
         const diff = Date.now() - new Date(lastSeenAt).getTime();
         const minutes = diff / (1000 * 60);
-        if (minutes < 2) return 1;
-        if (minutes < 5) return 1.5;
-        if (minutes < 10) return 2;
-        if (minutes < 60) return 3;
-        if (minutes < 120) return 5;
-        if (minutes < 720) return 10;
-        return 20;
+        if (minutes < 2) return 1 * collapsedMult;
+        if (minutes < 10) return 1.5 * collapsedMult;
+        if (minutes < 20) return 2 * collapsedMult;
+        if (minutes < 30) return 3 * collapsedMult;
+        if (minutes < 60) return 4 * collapsedMult;
+        if (minutes < 120) return 5 * collapsedMult;
+        if (minutes < 720) return 10 * collapsedMult;
+        return 20 * collapsedMult;
     }
 
     function getUserCycleDuration(username) {
-        const base = State.baseIntervals[username] || CONFIG.REFRESH_INTERVAL_MS;
         const mult = State.multipliers[username] || 1;
-        return base * mult;
+        return CONFIG.REFRESH_INTERVAL_MS * mult;
     }
 
     // --- Cross-Tab BroadcastChannel ---
@@ -164,7 +168,6 @@
         const store = {
             users: State.users,
             lastIds: State.lastIds,
-            baseIntervals: State.baseIntervals,
             enableSysNotify: State.enableSysNotify,
             enableDanmaku: State.enableDanmaku,
             hiddenUsers: Array.from(State.hiddenUsers)
@@ -181,8 +184,7 @@
             nextFetchTime: State.nextFetchTime,
             multipliers: State.multipliers,
             userProfiles: State.userProfiles,
-            users: State.users,
-            baseIntervals: State.baseIntervals
+            users: State.users
         });
     }
 
@@ -193,7 +195,7 @@
                 method: "GET",
                 url: url,
                 headers: {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.53 Safari/537.36",
                     "Accept": "application/json"
                 },
                 onload: (response) => {
@@ -240,7 +242,7 @@
         .sb-user-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 2px; background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.05); border-left: 3px solid #989898; }
         .sb-user-row:last-child { border-bottom: none; }
         .sb-user-row:hover { background: rgba(255,255,255,0.08); }
-        .sb-user-row.active { background: rgba(0, 212, 255, 0.1); border-left: 3px solid #ffd700; }
+        .sb-user-row.active { background: rgba(255, 215, 0, 0.1); border-left: 3px solid #ffd700; }
 
         .sb-del { font-size: 12px; color: #666; cursor: pointer; margin: 0 2pt 1px 6px; line-height: 1; }
         .sb-del:hover { color: #ff5555; }
@@ -252,6 +254,7 @@
         .sb-user-row.active .sb-user-name { color: #ffd700; font-weight: 600; }
         .sb-user-activity { font-size: 9px; color: #888; display: flex; gap: 2px; margin: 0 6px; flex-shrink: 0; }
         .sb-user-activity span { white-space: nowrap; width: 38px; text-align: right; font-family: monospace; }
+
         /* 卡片列表 */
         .sb-list { flex: 1; padding: 8px; background: transparent; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #444 transparent; }
         .sb-list::-webkit-scrollbar { width: 4px; }
@@ -298,7 +301,7 @@
         .dm-icon-pop .action-emoji { width: 100px; height: 100px; filter: drop-shadow(0 4px 20px rgba(255,255,255,0.4)); }
 
         /* 调试日志 */
-        .sb-console { height: 40px; background: #000; border-top: 1px solid #333; padding: 5px; font-family: monospace; font-size: 10px; overflow-y: auto; color: #666; }
+        .sb-console { height: 20px; background: #000; border-top: 1px solid #333; padding: 5px; font-family: monospace; font-size: 10px; overflow-y: auto; color: #666; }
         .log-ok { color: #0f0; } .log-err { color: #f55; }
     `;
 
@@ -318,8 +321,8 @@
             State.userProfiles[username] = { last_posted_at: newLastPosted, last_seen_at: newLastSeen };
 
             if (!isInitial && !hasChanged && State.data[username]?.length > 0) {
-                log(`User ${username} dormant, skipping.`, 'info');
-                return 'SKIPPED';
+               log(`[${username}] dormant.`, 'info');
+               return 'SKIPPED';
             }
 
             const [jsonActions, jsonReactions] = await Promise.all([
@@ -344,7 +347,7 @@
 
             return [...actions, ...reactions].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, CONFIG.LOG_LIMIT_PER_USER);
         } catch (e) {
-            log(`Err ${username}: ${e.message}`, 'error');
+            log(`[${username}]: ${e.message}`, 'error');
             return [];
         }
     }
@@ -529,7 +532,7 @@
                 diff.push(act);
             }
             if (diff.length > 0) {
-                log(`User ${user} has ${diff.length} new`, 'success');
+                log(`[${user}] has ${diff.length} new`, 'success');
                 diff.reverse().forEach((act, i) => setTimeout(() => {
                     sendNotification(act);
                     broadcastNewAction(act);
@@ -539,7 +542,7 @@
             }
         }
         State.data[user] = actions;
-        log(`User ${user} has ${actions.length} actions`, 'info');
+        log(`[${user}] has ${actions.length} actions`, 'info');
         return hasUpdates;
     }
 
@@ -557,7 +560,6 @@
         let hasUpdates = false;
         const now = Date.now();
         for (const user of State.users) {
-            if (!State.baseIntervals[user]) State.baseIntervals[user] = CONFIG.REFRESH_INTERVAL_MS;
             const updated = await processUser(user, true);
             if (updated) hasUpdates = true;
             State.nextFetchTime[user] = now + getUserCycleDuration(user) + Math.random() * 10000;
@@ -596,21 +598,38 @@
         channel.postMessage({ type: 'new_action', action });
     }
 
+    function takeLeadership() {
+        if (State.isLeader) return;
+        if (leaderCheckTimeout) {
+            clearTimeout(leaderCheckTimeout);
+            leaderCheckTimeout = null;
+        }
+        State.isLeader = true;
+        // log('Took leadership.', 'success');
+        channel.postMessage({ type: 'leader_takeover' });
+        scheduler();
+    }
+
     channel.onmessage = (event) => {
         const msg = event.data;
         if (msg.type === 'leader_check') { if (State.isLeader) channel.postMessage({ type: 'leader_here' }); }
         else if (msg.type === 'leader_here') { if (leaderCheckTimeout) { clearTimeout(leaderCheckTimeout); leaderCheckTimeout = null; } State.isLeader = false; channel.postMessage({ type: 'data_request' }); }
         else if (msg.type === 'data_request') { if (State.isLeader) broadcastState(); }
         else if (msg.type === 'leader_resign') { setTimeout(() => attemptLeadership(), Math.random() * 300); }
+        else if (msg.type === 'leader_takeover') {
+            if (State.isLeader) {
+                State.isLeader = false;
+                if (leaderCheckTimeout) clearTimeout(leaderCheckTimeout);
+                // log('Leadership yielded.', 'info');
+                broadcastState();
+            }
+        }
         else if (msg.type === 'data_update') {
             if (!State.isLeader) {
-                // Sync User List if changed
                 if (msg.users && JSON.stringify(msg.users) !== JSON.stringify(State.users)) {
                     State.users = msg.users || [];
-                    State.baseIntervals = msg.baseIntervals || {};
-                    renderSidebarRows(); // Re-render sidebar if users changed
+                    renderSidebarRows();
                 }
-
                 State.data = msg.data;
                 State.lastIds = msg.lastIds;
                 if(msg.hiddenUsers) State.hiddenUsers = new Set(msg.hiddenUsers);
@@ -633,16 +652,17 @@
             }
         }
         else if (msg.type === 'cmd_add_user') {
-            if (State.isLeader && !State.users.includes(msg.username)) {
+            if (State.isLeader && !State.users.includes(msg.username) && State.users.length < CONFIG.MAX_USERS) {
                 fetchUser(msg.username, true).then(res => {
                     if (res && res !== 'SKIPPED') {
                         State.users.push(msg.username);
-                        State.baseIntervals[msg.username] = CONFIG.REFRESH_INTERVAL_MS;
                         saveConfig();
                         renderSidebarRows();
                         tickAll();
                     }
                 });
+            } else if (State.users.length >= CONFIG.MAX_USERS) {
+                log(`Max ${CONFIG.MAX_USERS} users reached.`, 'error');
             }
         }
         else if (msg.type === 'cmd_remove_user') {
@@ -730,11 +750,14 @@
 
             const test = await fetchUser(name, true);
             if(test && test !== 'SKIPPED') {
-                State.users.push(name);
-                State.baseIntervals[name] = CONFIG.REFRESH_INTERVAL_MS;
-                saveConfig();
-                renderSidebarRows();
-                tickAll();
+                if (State.users.length >= CONFIG.MAX_USERS) {
+                    log(`Max ${CONFIG.MAX_USERS} users reached.`, 'error');
+                } else {
+                    State.users.push(name);
+                    saveConfig();
+                    renderSidebarRows();
+                    tickAll();
+                }
             }
             btn.innerText = '＋';
             inp.value = '';
@@ -744,7 +767,9 @@
 
         renderSidebarRows();
         startVisualLoops();
-        log('Seeking Engine Started.', 'success');
+        window.addEventListener('focus', takeLeadership);
+
+        log('Engine started.', 'success');
         setInterval(() => scheduler(), 1000);
     }
 
@@ -755,7 +780,6 @@
         }
         State.users = State.users.filter(u => u !== name);
         delete State.lastIds[name];
-        delete State.baseIntervals[name];
         delete State.multipliers[name];
         saveConfig();
         renderSidebarRows();
@@ -890,14 +914,9 @@
         State.users.forEach(u => {
             const isHidden = State.hiddenUsers.has(u);
             const userColor = getUserColor(u);
-            const highlightColor = nameColors[0];
             const row = document.createElement('div');
             row.id = `row-${u}`;
             row.className = `sb-user-row ${isHidden ? '' : 'active'}`;
-            if (!isHidden) {
-                row.style.borderLeftColor = highlightColor;
-                row.style.background = `${highlightColor}15`;
-            }
 
             const delBtn = document.createElement('div');
             delBtn.className = 'sb-del';
