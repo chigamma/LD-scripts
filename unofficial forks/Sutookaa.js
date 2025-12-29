@@ -34,7 +34,7 @@
         // 用户自己主题色
         "#ffd700",
         // 关注用户主题色
-        "#00d4ff", "#ff6b6b", "#4d5ef7ff", "#c77dff", "#00ff88", "#f87ecaff"];
+        "#00d4ff", "#ff6b6b", "#4d5ef7ff", "#c77dff", "#00ff88", "#f87eca"];
 
     // --- 类别定义 ---
     const categoryColors = {
@@ -253,7 +253,7 @@
         .sb-user-name.disabled { color: #666; }
         .sb-user-row.active .sb-user-name { color: #ffd700; font-weight: 600; }
         .sb-user-activity { font-size: 9px; color: #888; display: flex; gap: 2px; margin: 0 6px; flex-shrink: 0; }
-        .sb-user-activity span { white-space: nowrap; width: 38px; text-align: right; font-family: monospace; }
+        .sb-user-activity span { white-space: nowrap; width: 36px; text-align: right; font-family: monospace; }
 
         /* 卡片列表 */
         .sb-list { flex: 1; padding: 8px; background: transparent; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #444 transparent; }
@@ -386,9 +386,9 @@
 
     function getActionIcon(actionType) {
         const ACTION_ICONS = {
-            reply: '<svg class="fa d-icon d-icon-reply svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M8.309 189.836L184.313 37.851C199.719 24.546 224 35.347 224 56.015v80.053c160.629 1.839 288 34.032 288 186.258 0 61.441-39.581 122.309-83.333 154.132-13.653 9.931-33.111-2.533-28.077-18.631 45.344-145.012-21.507-183.51-176.59-185.742V360c0 20.7-24.3 31.453-39.687 18.164l-176.004-152c-11.071-9.562-11.086-26.753 0-36.328z"/></svg>',
-            post: '<svg class="fa d-icon d-icon-pencil svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="M497.9 142.1l-46.1 46.1c-4.7 4.7-12.3 4.7-17 0l-111-111c-4.7-4.7-4.7-12.3 0-17l46.1-46.1c18.7-18.7 49.1-18.7 67.9 0l60.1 60.1c18.8 18.7 18.8 49.1 0 67.9zM284.2 99.8L21.6 362.4.4 483.9c-2.9 16.4 11.4 30.6 27.8 27.8l121.5-21.3 262.6-262.6c4.7-4.7 4.7-12.3 0-17l-111-111c-4.8-4.7-12.4-4.7-17.1 0zM88 424h48v36.3l-64.5 11.3-31.1-31.1L51.7 376H88v48z"/></svg>',
-            like: '<svg class="fa d-icon d-icon-d-heart svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><path fill="#fa6c8d" d="M305 151.1L320 171.8L335 151.1C360 116.5 400.2 96 442.9 96C516.4 96 576 155.6 576 229.1L576 231.7C576 343.9 436.1 474.2 363.1 529.9C350.7 539.3 335.5 544 320 544C304.5 544 289.2 539.4 276.9 529.9C203.9 474.2 64 343.9 64 231.7L64 229.1C64 155.6 123.6 96 197.1 96C239.8 96 280 116.5 305 151.1z"/></svg>',
+            reply: '<svg class="fa d-icon d-icon-reply svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 512 512"><path d="M8.309 189.836L184.313 37.851C199.719 24.546 224 35.347 224 56.015v80.053c160.629 1.839 288 34.032 288 186.258 0 61.441-39.581 122.309-83.333 154.132-13.653 9.931-33.111-2.533-28.077-18.631 45.344-145.012-21.507-183.51-176.59-185.742V360c0 20.7-24.3 31.453-39.687 18.164l-176.004-152c-11.071-9.562-11.086-26.753 0-36.328z"/></svg>',
+            post: '<svg class="fa d-icon d-icon-pencil svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 512 512"><path d="M497.9 142.1l-46.1 46.1c-4.7 4.7-12.3 4.7-17 0l-111-111c-4.7-4.7-4.7-12.3 0-17l46.1-46.1c18.7-18.7 49.1-18.7 67.9 0l60.1 60.1c18.8 18.7 18.8 49.1 0 67.9zM284.2 99.8L21.6 362.4.4 483.9c-2.9 16.4 11.4 30.6 27.8 27.8l121.5-21.3 262.6-262.6c4.7-4.7 4.7-12.3 0-17l-111-111c-4.8-4.7-12.4-4.7-17.1 0zM88 424h48v36.3l-64.5 11.3-31.1-31.1L51.7 376H88v48z"/></svg>',
+            like: '<svg class="fa d-icon d-icon-d-heart svg-icon svg-string" xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 640 640"><path fill="#fa6c8d" d="M305 151.1L320 171.8L335 151.1C360 116.5 400.2 96 442.9 96C516.4 96 576 155.6 576 229.1L576 231.7C576 343.9 436.1 474.2 363.1 529.9C350.7 539.3 335.5 544 320 544C304.5 544 289.2 539.4 276.9 529.9C203.9 474.2 64 343.9 64 231.7L64 229.1C64 155.6 123.6 96 197.1 96C239.8 96 280 116.5 305 151.1z"/></svg>',
         };
         const REACTION_ICONS = {
             "tieba_087": '/uploads/default/original/3X/2/e/2e09f3a3c7b27eacbabe9e9614b06b88d5b06343.png?v=15',
