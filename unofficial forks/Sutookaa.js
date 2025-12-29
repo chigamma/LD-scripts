@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo追觅
 // @namespace    https://linux.do/
-// @version      3.2.1
+// @version      3.2.2
 // @description  在网页上实时监控 Linux.do 活动。
 // @author       ChiGamma
 // @license      Fair License
@@ -34,7 +34,7 @@
         // 用户自己主题色
         "#ffd700",
         // 关注用户主题色
-        "#00d4ff", "#ff6b6b", "#4d5ef7ff", "#c77dff", "#00ff88", "#f87eca"];
+        "#00d4ff", "#ff6b6b", "#4d5ef7", "#c77dff", "#00ff88", "#f87eca"];
 
     // --- 类别定义 ---
     const categoryColors = {
@@ -163,6 +163,7 @@
     const CHANNEL_NAME = 'ld_seeking_channel';
     const channel = new BroadcastChannel(CHANNEL_NAME);
     let leaderCheckTimeout = null;
+    let pendingLeadershipTimer = null;
 
     function saveConfig() {
         const store = {
@@ -189,11 +190,12 @@
     }
 
     // --- 核心网络层 ---
-    function safeFetch(url) {
+    function safeFetch(url, timeout = 30000) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: "GET",
                 url: url,
+                timeout: timeout,
                 headers: {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.53 Safari/537.36",
                     "Accept": "application/json"
@@ -204,6 +206,7 @@
                         catch (e) { reject(new Error("JSON Parse Error")); }
                     } else { reject(new Error(`Status ${response.status}`)); }
                 },
+                ontimeout: () => reject(new Error("Timeout")),
                 onerror: (err) => reject(err)
             });
         });
@@ -224,7 +227,8 @@
         .sb-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
         .sb-title { font-weight: 800; font-size: 14px; color: #fff; display: flex; align-items: center; gap: 8px; }
         .sb-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #666; transition: 0.3s; }
-        .sb-status-dot.ok { background: #00ff88; box-shadow: 0 0 8px #00ff88; }
+        .sb-status-dot.leader { background: #00ff88; box-shadow: 0 0 8px #00ff88; }
+        .sb-status-dot.follower { background: #00d4ff; box-shadow: 0 0 8px #00d4ff; }
         .sb-status-dot.loading { background: #ffd700; animation: pulse 1s infinite; }
 
         .sb-tools { display: flex; gap: 6px; }
@@ -307,8 +311,9 @@
 
     // --- 逻辑处理 ---
     async function fetchUser(username, isInitial = false) {
+        const timeout = Math.floor(getUserCycleDuration(username) / 3);
         try {
-            const profileJson = await safeFetch(`${CONFIG.HOST}/u/${username}.json`);
+            const profileJson = await safeFetch(`${CONFIG.HOST}/u/${username}.json`, timeout);
             if (!profileJson || !profileJson.user) return [];
 
             const newLastSeen = profileJson.user.last_seen_at;
@@ -326,8 +331,8 @@
             }
 
             const [jsonActions, jsonReactions] = await Promise.all([
-                safeFetch(`${CONFIG.HOST}/user_actions.json?offset=0&limit=${CONFIG.LOG_LIMIT_PER_USER}&username=${username}&filter=1,4,5`),
-                safeFetch(`${CONFIG.HOST}/discourse-reactions/posts/reactions.json?username=${username}`)
+                safeFetch(`${CONFIG.HOST}/user_actions.json?offset=0&limit=${CONFIG.LOG_LIMIT_PER_USER}&username=${username}&filter=1,4,5`, timeout),
+                safeFetch(`${CONFIG.HOST}/discourse-reactions/posts/reactions.json?username=${username}`, timeout)
             ]);
 
             const actions = (jsonActions.user_actions || []).map(action => {
@@ -569,7 +574,7 @@
         renderFeed();
         broadcastState();
 
-        if (dot) dot.className = 'sb-status-dot ok';
+        updateStatusDot();
         State.isProcessing = false;
     }
 
@@ -590,8 +595,13 @@
 
         renderFeed();
         broadcastState();
-        if (dot) dot.className = 'sb-status-dot ok';
+        updateStatusDot();
         State.isProcessing = false;
+    }
+
+    function updateStatusDot() {
+        const dot = shadowRoot?.querySelector('.sb-status-dot');
+        if (dot) dot.className = `sb-status-dot ${State.isLeader ? 'leader' : 'follower'}`;
     }
 
     function broadcastNewAction(action) {
@@ -605,23 +615,36 @@
             leaderCheckTimeout = null;
         }
         State.isLeader = true;
-        // log('Took leadership.', 'success');
+        updateStatusDot();
         channel.postMessage({ type: 'leader_takeover' });
         scheduler();
+    }
+    function handleWindowFocus() {
+        if (State.isLeader) return;
+        pendingLeadershipTimer = setTimeout(() => {
+            takeLeadership();
+            pendingLeadershipTimer = null;
+        }, 2 * 60 * 1000);
+    }
+    function handleWindowBlur() {
+        if (pendingLeadershipTimer) {
+            clearTimeout(pendingLeadershipTimer);
+            pendingLeadershipTimer = null;
+        }
     }
 
     channel.onmessage = (event) => {
         const msg = event.data;
         if (msg.type === 'leader_check') { if (State.isLeader) channel.postMessage({ type: 'leader_here' }); }
-        else if (msg.type === 'leader_here') { if (leaderCheckTimeout) { clearTimeout(leaderCheckTimeout); leaderCheckTimeout = null; } State.isLeader = false; channel.postMessage({ type: 'data_request' }); }
+        else if (msg.type === 'leader_here') { if (leaderCheckTimeout) { clearTimeout(leaderCheckTimeout); leaderCheckTimeout = null; } State.isLeader = false; updateStatusDot(); channel.postMessage({ type: 'data_request' }); }
         else if (msg.type === 'data_request') { if (State.isLeader) broadcastState(); }
         else if (msg.type === 'leader_resign') { setTimeout(() => attemptLeadership(), Math.random() * 300); }
         else if (msg.type === 'leader_takeover') {
             if (State.isLeader) {
                 State.isLeader = false;
                 if (leaderCheckTimeout) clearTimeout(leaderCheckTimeout);
-                // log('Leadership yielded.', 'info');
                 broadcastState();
+                updateStatusDot();
             }
         }
         else if (msg.type === 'data_update') {
@@ -767,7 +790,8 @@
 
         renderSidebarRows();
         startVisualLoops();
-        window.addEventListener('focus', takeLeadership);
+        window.addEventListener('focus', handleWindowFocus);
+        window.addEventListener('blur', handleWindowBlur);
 
         log('Engine started.', 'success');
         setInterval(() => scheduler(), 1000);
@@ -825,7 +849,7 @@
         if (hasUpdates) saveConfig();
         renderFeed();
         broadcastState();
-        if (dot) dot.className = 'sb-status-dot ok';
+        updateStatusDot();
         State.isProcessing = false;
     }
 

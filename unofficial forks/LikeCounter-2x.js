@@ -183,7 +183,7 @@
         .ld-content-wrapper { display: flex !important; margin: 0 !important; align-items: center !important; gap: 6px !important; flex: 0 1 auto !important; }
 
         .btn-toggle-reaction-like { transform: scale(${scale}) !important; transform-origin: center !important; margin: ${btnMargin}px !important; }
-        .reaction-button { transform: scale(${scale * 0.75}) !important; transform-origin: center !important; margin: ${btnMargin}px !important; }
+        .reaction-button { transform: scale(${scale > 1 ? scale * 0.75 : scale}) !important; transform-origin: center !important; margin: ${btnMargin}px !important; }
         .discourse-reactions-picker-container .pickable-reaction { min-width: ${emojiSize}px !important; min-height: ${emojiSize}px !important; padding: ${btnPadding}px !important; }
         .discourse-reactions-picker-container .pickable-reaction .emoji { width: ${emojiSize}px !important; height: ${emojiSize}px !important; }
 
