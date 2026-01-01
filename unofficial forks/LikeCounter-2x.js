@@ -2,7 +2,7 @@
 // @name:en      Linux.do LARGE Like Counter
 // @name         Linux.do 大型点赞计数器
 // @namespace    https://linux.do/
-// @version      1.3
+// @version      1.4
 // @description:en  Tracks available likes/reactions on linux.do.
 // @description     显示 linux.do 上的可用点赞数。
 // @author       ChiGamma
@@ -25,7 +25,10 @@
         STORAGE_KEY: 'linuxdo_likes_history',
         LIMITS: { 0: 50, 1: 50, 2: 75, 3: 100, 4: 150 },
         MAX_STORED_ITEMS: 500,
-        SCALE_FACTOR: GM_getValue('linuxdo_reaction_scale', 3)
+        SCALE_FACTOR: GM_getValue('linuxdo_reaction_scale', 3),
+        FETCH_TIMEOUT: 5000,
+        MAX_RETRIES: 2,
+        RETRY_DELAY: 30 * 1000
     };
 
     // --- Tampermonkey Menu for Scale Setting ---
@@ -54,6 +57,8 @@
     let currentUser = null;
     let uiUpdateTimer = null;
     let cooldownTicker = null;
+    let isSyncing = false;
+    let isInitialized = false;
 
     // --- Persistence ---
     function loadState() {
@@ -219,7 +224,7 @@
 
         if (!picker) return;
 
-        cleanOldEntries();
+        loadState();
         const count = state.timestamps.length;
         const now = Date.now();
         const isCooldown = state.cooldownUntil > now;
@@ -246,28 +251,23 @@
         }
 
         // 2. Get/Create Main Counter Div
-        let counter = picker.querySelector('.ld-picker-counter');
-        if (!counter) {
-            counter = document.createElement('div');
+        let counter = picker.querySelector('.ld-picker-counter') || document.createElement('div');
+        if (!counter.parentNode) {
             counter.className = finalClassName;
             picker.insertBefore(counter, picker.firstChild);
-        } else if (counter.className !== finalClassName) {
+        } else if (counter.className !== finalClassName)
             counter.className = finalClassName;
-        }
 
         // 3. Get/Create Wrapper Div
-        let wrapper = counter.querySelector('.ld-content-wrapper');
-        if (!wrapper) {
-            wrapper = document.createElement('div');
+        let wrapper = counter.querySelector('.ld-content-wrapper') || document.createElement('div');
+        if (!wrapper.parentNode) {
             wrapper.className = 'ld-content-wrapper';
             counter.appendChild(wrapper);
         }
 
         // 4. Handle Tooltip INSIDE Wrapper
         let tooltipSpan = wrapper.querySelector('.ld-mismatch-tooltip');
-        const shouldShowTooltip = !state.matched && !isCooldown;
-
-        if (shouldShowTooltip) {
+        if (!isCooldown && !state.matched) {
             if (!tooltipSpan) {
                 tooltipSpan = document.createElement('span');
                 tooltipSpan.className = 'ld-mismatch-tooltip';
@@ -276,45 +276,49 @@
                 tooltipSpan.onclick = (e) => { e.preventDefault(); syncRemote(); };
                 wrapper.prepend(tooltipSpan);
             }
-            if (wrapper.firstChild !== tooltipSpan) {
-                wrapper.insertBefore(tooltipSpan, wrapper.firstChild);
-            }
         } else if (tooltipSpan) {
             tooltipSpan.remove();
         }
 
         // 5. Handle Text INSIDE Wrapper
-        let textSpan = wrapper.querySelector('.ld-text-span');
-        if (!textSpan) {
-            textSpan = document.createElement('span');
+        let textSpan = wrapper.querySelector('.ld-text-span') || document.createElement('span');
+        if (!textSpan.parentNode) {
             textSpan.className = 'ld-text-span';
             wrapper.appendChild(textSpan);
         }
-
         if (textSpan.textContent !== displayText) {
             textSpan.textContent = displayText;
         }
 
-        // 6. Schedule Next Tick
         if (isCooldown) {
             const diff = state.cooldownUntil - Date.now();
-            const h = Math.floor(diff / 3600000);
-            cooldownTicker = setTimeout(() => requestUiUpdate(true), h === 0 ? 1000 : 30 * 1000);
+            cooldownTicker = setTimeout(() => requestUiUpdate(true), Math.floor(diff / 3600000) === 0 ? 1000 : 30000);
         }
     }
 
     // --- Sync Logic ---
+    const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    async function fetchWithTimeout(url, options = {}) {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), CONFIG.FETCH_TIMEOUT);
+        try {
+            const response = await fetch(url, { ...options, signal: controller.signal });
+            clearTimeout(id);
+            return response;
+        } catch (e) { clearTimeout(id); throw e; }
+    }
+
     async function fetchUserActions(username) {
         let offset = 0, limit = 50, allItems = [], keepFetching = true, pages = 0;
         const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-
         while (keepFetching && pages < 5) {
             try {
-                const url = `${CONFIG.HOST}/user_actions.json?limit=${limit}&username=${username}&filter=1&offset=${offset}`;
-                const res = await fetch(url).then(r => r.json());
-                const items = res.user_actions || [];
-                if (!items.length) break;
-
+                const res = await fetchWithTimeout(`${CONFIG.HOST}/user_actions.json?limit=${limit}&username=${username}&filter=1&offset=${offset}`);
+                if (!res.ok || res.status !== 200) throw new Error(`HTTP error ${res.status}`);
+                const data = await res.json();
+                const items = data.user_actions || [];
+                if (!items.length) { keepFetching = false; break; }
                 let hasOld = false;
                 for (const item of items) {
                     const t = new Date(item.created_at).getTime();
@@ -322,9 +326,11 @@
                     else hasOld = true;
                 }
                 if (hasOld || items.length < limit) keepFetching = false;
-                offset += limit;
-                pages++;
-            } catch (e) { keepFetching = false; }
+                offset += limit; pages++;
+            } catch (e) {
+                console.warn('[LikeCounter] fetchUserActions error:', e.message);
+                throw e;
+            }
         }
         return allItems;
     }
@@ -332,14 +338,13 @@
     async function fetchReactions(username) {
         let beforeId = null, allItems = [], keepFetching = true, pages = 0;
         const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-
         while (keepFetching && pages < 10) {
             try {
-                let url = `${CONFIG.HOST}/discourse-reactions/posts/reactions.json?username=${username}`;
-                if (beforeId) url += `&before_reaction_user_id=${beforeId}`;
-
-                const items = await fetch(url).then(r => r.json());
-                if (!Array.isArray(items) || !items.length) break;
+                let url = `${CONFIG.HOST}/discourse-reactions/posts/reactions.json?username=${username}${beforeId ? `&before_reaction_user_id=${beforeId}` : ''}`;
+                const res = await fetchWithTimeout(url);
+                if (!res.ok || res.status !== 200) throw new Error(`HTTP error ${res.status}`);
+                const items = await res.json();
+                if (!Array.isArray(items) || !items.length) { keepFetching = false; break; }
 
                 let hasOld = false;
                 for (const item of items) {
@@ -350,33 +355,33 @@
                 beforeId = items[items.length - 1].id;
                 if (hasOld || items.length < 20) keepFetching = false;
                 pages++;
-            } catch (e) { keepFetching = false; }
+            } catch (e) {
+                console.warn('[LikeCounter] fetchReactions error:', e.message);
+                throw e;
+            }
         }
         return allItems;
     }
 
     async function syncRemote() {
+        if (isSyncing || !isInitialized) return;
+        loadState();
+        if (Date.now() - state.lastSync < 30000) return;
         if (!currentUser) {
-             try { currentUser = require("discourse/models/user").default.current(); } catch(e) {}
-             if(!currentUser) return;
+            try { currentUser = require("discourse/models/user").default.current(); } catch(e) {}
+            if(!currentUser) return;
         }
+
+        isSyncing = true;
         const savedCooldown = state.cooldownUntil;
         const savedMatched = state.matched;
-        cleanOldEntries();
         const username = currentUser.username;
-
         try {
             const [likes, reactions] = await Promise.all([fetchUserActions(username), fetchReactions(username)]);
-            const combined = [...likes, ...reactions];
             const postMap = new Map();
-            for (const item of combined) {
-                if (!postMap.has(item.post_id) || postMap.get(item.post_id) < item.timestamp) {
-                    postMap.set(item.post_id, item.timestamp);
-                }
-            }
+            [...likes, ...reactions].forEach(item => { if (!postMap.has(item.post_id) || postMap.get(item.post_id) < item.timestamp) postMap.set(item.post_id, item.timestamp); });
             const dedupedTimestamps = Array.from(postMap.values());
             const maxRemote = Math.max(...dedupedTimestamps, 0);
-
             const localNewer = state.timestamps.filter(ts => ts > maxRemote + 2000);
             let placeholders = [];
             if (savedCooldown > Date.now()) {
@@ -386,69 +391,40 @@
 
             state.timestamps = Array.from(new Set([...dedupedTimestamps, ...localNewer, ...placeholders]));
             state.lastSync = Date.now();
-
             const limit = CONFIG.LIMITS[currentUser.trust_level] || 50;
-            const apiCount = dedupedTimestamps.length;
-            if (savedMatched) {
-                state.matched = (apiCount <= limit);
-            } else {
-                state.matched = (apiCount === limit);
-            }
-            if (savedCooldown > Date.now()) {
-                state.cooldownUntil = savedCooldown;
-            }
-
+            state.matched = savedMatched ? (dedupedTimestamps.length <= limit) : (dedupedTimestamps.length === limit);
+            if (savedCooldown > Date.now()) state.cooldownUntil = savedCooldown;
             cleanOldEntries();
             if (state.timestamps.length >= limit && state.cooldownUntil === 0) {
-                const oldestTs = Math.min(...state.timestamps);
-                const estimatedCooldown = oldestTs + 24 * 60 * 60 * 1000;
-                if (estimatedCooldown > Date.now()) {
-                    state.cooldownUntil = estimatedCooldown;
-                }
+                const est = Math.min(...state.timestamps) + 24*60*60*1000;
+                if (est > Date.now()) state.cooldownUntil = est;
             }
-
             saveState();
             requestUiUpdate(true);
-        } catch (e) { console.error("[LikeCounter] Sync failed", e); }
+        } catch (e) {
+            console.warn('[LikeCounter] Sync cancelled due to error, keeping current data:', e.message);
+        } finally { isSyncing = false; }
     }
 
     // --- Init ---
-    installInterceptors();
-    loadState();
+    function initialize() {
+        if (isInitialized) return;
+        installInterceptors();
+        loadState();
+        isInitialized = true;
+    }
 
-    let observerTimer = null;
     const observer = new MutationObserver((mutations) => {
-        let reactionPickerFound = false;
-        for (const m of mutations) {
-            if (m.addedNodes.length) {
-                for (const node of m.addedNodes) {
-                    if (node.nodeType === 1 && (node.classList.contains('discourse-reactions-picker') || node.querySelector('.discourse-reactions-picker'))) {
-                        reactionPickerFound = true;
-                        break;
-                    }
-                }
-            }
-            if (reactionPickerFound) break;
-        }
-
-        if (reactionPickerFound) {
-            if (observerTimer) clearTimeout(observerTimer);
+        if (mutations.some(m => Array.from(m.addedNodes).some(n => n.nodeType === 1 && (n.classList.contains('discourse-reactions-picker') || n.querySelector('.discourse-reactions-picker'))))) {
             requestUiUpdate(true);
-        } else {
-            if (observerTimer) return;
-            observerTimer = setTimeout(() => {
-                const picker = document.querySelector('.discourse-reactions-picker');
-                if (picker) requestUiUpdate();
-                observerTimer = null;
-            }, 300);
         }
     });
 
     window.addEventListener('load', () => {
+        initialize();
         try { currentUser = require("discourse/models/user").default.current(); } catch (e) {}
         setTimeout(syncRemote, 3000);
         setInterval(syncRemote, CONFIG.SYNC_INTERVAL);
         observer.observe(document.body, { childList: true, subtree: true });
     });
-
 })();

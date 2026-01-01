@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo追觅
 // @namespace    https://linux.do/
-// @version      3.2.2
+// @version      3.2.3
 // @description  在网页上实时监控 Linux.do 活动。
 // @author       ChiGamma
 // @license      Fair License
@@ -28,7 +28,11 @@
         SIDEBAR_WIDTH: '300px',
         REFRESH_INTERVAL_MS: 60 * 1000,
         LOG_LIMIT_PER_USER: 10,
-        HOST: 'https://linux.do'
+        HOST: 'https://linux.do',
+        MAX_RETRIES: 2,
+        RETRY_DELAY_MS: 2000,
+        ERROR_BACKOFF_MS: 5 * 60 * 1000,
+        THROTTLE_MS: 500
     };
     const nameColors = [
         // 用户自己主题色
@@ -96,7 +100,7 @@
         selfUser: getSelfUser(),
         nextFetchTime: {},
         userProfiles: {},
-        isLeader: false
+        isLeader: false,
     };
 
     // --- Time & Schedule Logic ---
@@ -190,7 +194,9 @@
     }
 
     // --- 核心网络层 ---
-    function safeFetch(url, timeout = 30000) {
+    const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    function safeFetch(url, timeout = 30000, retryCount = 0) {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: "GET",
@@ -200,13 +206,28 @@
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.53 Safari/537.36",
                     "Accept": "application/json"
                 },
-                onload: (response) => {
+                onload: async (response) => {
                     if (response.status >= 200 && response.status < 300) {
                         try { resolve(JSON.parse(response.responseText)); }
                         catch (e) { reject(new Error("JSON Parse Error")); }
-                    } else { reject(new Error(`Status ${response.status}`)); }
+                    } else if ((response.status >= 500 || response.status === 429) && retryCount < CONFIG.MAX_RETRIES) {
+                        const delay = CONFIG.RETRY_DELAY_MS * (retryCount + 1);
+                        await wait(delay);
+                        resolve(safeFetch(url, timeout, retryCount + 1));
+                    } else {
+                        const err = new Error(`Status ${response.status}`);
+                        err.status = response.status;
+                        reject(err);
+                    }
                 },
-                ontimeout: () => reject(new Error("Timeout")),
+                ontimeout: async () => {
+                    if (retryCount < CONFIG.MAX_RETRIES) {
+                        await wait(CONFIG.RETRY_DELAY_MS * (retryCount + 1));
+                        resolve(safeFetch(url, timeout, retryCount + 1));
+                    } else {
+                        reject(new Error("Timeout"));
+                    }
+                },
                 onerror: (err) => reject(err)
             });
         });
@@ -330,6 +351,7 @@
                return 'SKIPPED';
             }
 
+            await wait(CONFIG.THROTTLE_MS);
             const [jsonActions, jsonReactions] = await Promise.all([
                 safeFetch(`${CONFIG.HOST}/user_actions.json?offset=0&limit=${CONFIG.LOG_LIMIT_PER_USER}&username=${username}&filter=1,4,5`, timeout),
                 safeFetch(`${CONFIG.HOST}/discourse-reactions/posts/reactions.json?username=${username}`, timeout)
@@ -353,7 +375,7 @@
             return [...actions, ...reactions].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, CONFIG.LOG_LIMIT_PER_USER);
         } catch (e) {
             log(`[${username}]: ${e.message}`, 'error');
-            return [];
+            return e.status === 429 ? 'RATE_LIMIT' : 'ERROR';
         }
     }
 
@@ -519,6 +541,7 @@
     async function processUser(user, isInitial = false) {
         const result = await fetchUser(user, isInitial);
         if (result === 'SKIPPED') return false;
+        if (result === 'RATE_LIMIT' || result === 'ERROR') return result;
         const actions = result;
         if (!actions || actions.length === 0) return false;
 
@@ -565,15 +588,20 @@
         let hasUpdates = false;
         const now = Date.now();
         for (const user of State.users) {
-            const updated = await processUser(user, true);
-            if (updated) hasUpdates = true;
-            State.nextFetchTime[user] = now + getUserCycleDuration(user) + Math.random() * 10000;
+            const result = await processUser(user, true);
+            if (result === true) hasUpdates = true;
+
+            let nextDelay = getUserCycleDuration(user) + Math.random() * 10000;
+            if (result === 'RATE_LIMIT') nextDelay = CONFIG.ERROR_BACKOFF_MS * 2;
+            else if (result === 'ERROR') nextDelay = CONFIG.ERROR_BACKOFF_MS;
+
+            State.nextFetchTime[user] = now + nextDelay;
+            await wait(CONFIG.THROTTLE_MS);
         }
         if (hasUpdates) saveConfig();
 
         renderFeed();
         broadcastState();
-
         updateStatusDot();
         State.isProcessing = false;
     }
@@ -589,9 +617,13 @@
         const dot = shadowRoot?.querySelector('.sb-status-dot');
         if (dot) dot.className = 'sb-status-dot loading';
 
-        const hasUpdates = await processUser(user, false);
-        State.nextFetchTime[user] = Date.now() + getUserCycleDuration(user) + Math.random() * 10000;
-        if (hasUpdates) saveConfig();
+        const result = await processUser(user, false);
+        let nextDelay = getUserCycleDuration(user) + Math.random() * 10000;
+        if (result === 'RATE_LIMIT') nextDelay = CONFIG.ERROR_BACKOFF_MS * 2;
+        else if (result === 'ERROR') nextDelay = CONFIG.ERROR_BACKOFF_MS;
+
+        State.nextFetchTime[user] = Date.now() + nextDelay;
+        if (result === true) saveConfig();
 
         renderFeed();
         broadcastState();
@@ -677,7 +709,7 @@
         else if (msg.type === 'cmd_add_user') {
             if (State.isLeader && !State.users.includes(msg.username) && State.users.length < CONFIG.MAX_USERS) {
                 fetchUser(msg.username, true).then(res => {
-                    if (res && res !== 'SKIPPED') {
+                    if (res && res !== 'SKIPPED' && res !== 'RATE_LIMIT' && res !== 'ERROR') {
                         State.users.push(msg.username);
                         saveConfig();
                         renderSidebarRows();
@@ -701,6 +733,7 @@
 
     // --- UI 构建 ---
     function createUI() {
+        if (State.isInitialized) return;
         const host = document.createElement('div');
         host.id = 'ld-seeking-host';
         document.body.appendChild(host);
@@ -772,7 +805,7 @@
             }
 
             const test = await fetchUser(name, true);
-            if(test && test !== 'SKIPPED') {
+            if(test && test !== 'SKIPPED' && test !== 'RATE_LIMIT' && test !== 'ERROR') {
                 if (State.users.length >= CONFIG.MAX_USERS) {
                     log(`Max ${CONFIG.MAX_USERS} users reached.`, 'error');
                 } else {
@@ -795,6 +828,7 @@
 
         log('Engine started.', 'success');
         setInterval(() => scheduler(), 1000);
+        State.isInitialized = true;
     }
 
     function removeUser(name) {
@@ -844,16 +878,20 @@
         State.isProcessing = true;
         const dot = shadowRoot?.querySelector('.sb-status-dot');
         if (dot) dot.className = 'sb-status-dot loading';
-        const hasUpdates = await processUser(username, false);
-        State.nextFetchTime[username] = Date.now() + getUserCycleDuration(username) + Math.random() * 10000;
-        if (hasUpdates) saveConfig();
+        const result = await processUser(username, false);
+        let nextDelay = getUserCycleDuration(username) + Math.random() * 10000;
+        if (result === 'RATE_LIMIT') nextDelay = CONFIG.ERROR_BACKOFF_MS * 2;
+        else if (result === 'ERROR') nextDelay = CONFIG.ERROR_BACKOFF_MS;
+
+        State.nextFetchTime[username] = Date.now() + nextDelay;
+        if (result === true) saveConfig();
         renderFeed();
         broadcastState();
         updateStatusDot();
         State.isProcessing = false;
     }
 
-    // --- Optimized Visual Loops ---
+    // --- Visual Loops ---
     function startVisualLoops() {
         // High Frequency: Timer Circles (Animation Frame)
         const updateTimers = () => {
@@ -1007,7 +1045,7 @@
             return;
         }
 
-        // Batch Render: Construct 1 big HTML string
+        // Batch Render
         div.innerHTML = all.map(item => {
             let avatar = "https://linux.do/uploads/default/original/3X/9/d/9dd4973138ccd78e8907865261d7b14d45a96d1c.png";
             if(item.avatar_template) avatar = CONFIG.HOST + item.avatar_template.replace("{size}", "48");
@@ -1042,6 +1080,14 @@
         }).join('');
     }
 
-    attemptLeadership();
-    createUI();
+    const init = async () => {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', createUI);
+        } else {
+            createUI();
+        }
+        attemptLeadership();
+    };
+
+    init();
 })();
