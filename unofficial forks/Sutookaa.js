@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo追觅
 // @namespace    https://linux.do/
-// @version      3.2.3
+// @version      3.3
 // @description  在网页上实时监控 Linux.do 活动。
 // @author       ChiGamma
 // @license      Fair License
@@ -21,11 +21,14 @@
 
     // 防止在 iframe 中运行 (如广告框)
     if (window.top !== window.self) return;
+    // Initialization Guard
+    if (window.ld_seeking_init_done) return;
+    window.ld_seeking_init_done = true;
 
     // --- 配置 ---
     const CONFIG = {
         MAX_USERS: 5,
-        SIDEBAR_WIDTH: '300px',
+        SIDEBAR_WIDTH: '270px',
         REFRESH_INTERVAL_MS: 60 * 1000,
         LOG_LIMIT_PER_USER: 10,
         HOST: 'https://linux.do',
@@ -38,7 +41,8 @@
         // 用户自己主题色
         "#ffd700",
         // 关注用户主题色
-        "#00d4ff", "#ff6b6b", "#4d5ef7", "#c77dff", "#00ff88", "#f87eca"];
+        "#00d4ff", "#ff6b6b", "#4d5ef7", "#c77dff", "#00ff88", "#f87eca"
+    ];
 
     // --- 类别定义 ---
     const categoryColors = {
@@ -47,17 +51,17 @@
         '非我莫属': '#a8c6fe', '读书成诗': '#e0d900', '扬帆起航': '#ff9838',
         '前沿快讯': '#BB8FCE', '网络记忆': '#F7941D', '福利羊毛': '#E45735',
         '搞七捻三': '#3AB54A', '社区孵化': '#ffbb00', '运营反馈': '#808281',
-        '深海幽域': '#45B7D1', '未分区':   '#9e9e9e',
-        '人工智能': '#00d4ff', '软件分享': '#4dabf7'
+        '深海幽域': '#45B7D1', '积分乐园': '#fcca44', '未分区':   '#9e9e9e',
     };
 
     const categoryMap = new Map();
     const category_dict = {
-        "前沿快讯": [34, 78, 79, 80], "开发调优": [4, 20, 31, 88],
-        "搞七捻三": [11, 35, 89, 21], "深海幽域": [45, 57, 58, 59],
-        "福利羊毛": [36, 60, 61, 62], "资源荟萃": [14, 83, 84, 85],
-        "跳蚤市场": [10, 13, 81, 82], "运营反馈": [2, 15, 16, 27],
-        "人工智能": [34], "软件分享": [14]
+        "开发调优": [4, 20, 31, 88], "国产替代": [98, 99, 100, 101], "资源荟萃": [14, 83, 84, 85],
+        '网盘资源': [94, 95, 96, 97], "文档共建": [42, 75, 76, 77], "跳蚤市场": [10, 13, 81, 82],
+        "非我莫属": [27, 72, 73, 74], "读书成诗": [32, 69, 70, 71], "扬帆起航": [46, 66, 67, 68],
+        "前沿快讯": [34, 78, 79, 80], "网络记忆": [92], "福利羊毛": [36, 60, 61, 62],
+        "搞七捻三": [11, 35, 89, 21], "社区孵化": [102, 103, 104, 105], "运营反馈": [2, 15, 16, 27],
+        "深海幽域": [45, 57, 58, 59], "积分乐园": [106, 107, 108, 109],
     };
     for (const name in category_dict) category_dict[name].forEach(id => categoryMap.set(id, name));
 
@@ -197,39 +201,86 @@
     const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
     function safeFetch(url, timeout = 30000, retryCount = 0) {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: "GET",
-                url: url,
-                timeout: timeout,
-                headers: {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.53 Safari/537.36",
-                    "Accept": "application/json"
-                },
-                onload: async (response) => {
-                    if (response.status >= 200 && response.status < 300) {
-                        try { resolve(JSON.parse(response.responseText)); }
-                        catch (e) { reject(new Error("JSON Parse Error")); }
-                    } else if ((response.status >= 500 || response.status === 429) && retryCount < CONFIG.MAX_RETRIES) {
+        return new Promise(async (resolve, reject) => {
+            const isSameOrigin = url.startsWith(CONFIG.HOST) || url.startsWith('/');
+            const headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.53 Safari/537.36",
+                "Accept": "application/json",
+                "Discourse-Present": "true"
+            };
+
+            if (isSameOrigin) {
+                // Native Fetch Implementation for Same-Origin
+                const controller = new AbortController();
+                const id = setTimeout(() => controller.abort(), timeout);
+
+                try {
+                    const response = await fetch(url, {
+                        method: 'GET',
+                        signal: controller.signal
+                    });
+                    clearTimeout(id);
+
+                    if (response.ok) {
+                        try {
+                            const data = await response.json();
+                            resolve(data);
+                        } catch (e) {
+                            reject(new Error("JSON Parse Error"));
+                        }
+                    } else {
+                        if ((response.status >= 500 || response.status === 429) && retryCount < CONFIG.MAX_RETRIES) {
+                            const delay = CONFIG.RETRY_DELAY_MS * (retryCount + 1);
+                            await wait(delay);
+                            resolve(safeFetch(url, timeout, retryCount + 1));
+                        } else {
+                            const err = new Error(`Status ${response.status}`);
+                            err.status = response.status;
+                            reject(err);
+                        }
+                    }
+                } catch (err) {
+                    clearTimeout(id);
+                    if (retryCount < CONFIG.MAX_RETRIES && err.name !== 'AbortError') {
                         const delay = CONFIG.RETRY_DELAY_MS * (retryCount + 1);
                         await wait(delay);
                         resolve(safeFetch(url, timeout, retryCount + 1));
                     } else {
-                        const err = new Error(`Status ${response.status}`);
-                        err.status = response.status;
-                        reject(err);
+                        reject(err.name === 'AbortError' ? new Error("Timeout") : err);
                     }
-                },
-                ontimeout: async () => {
-                    if (retryCount < CONFIG.MAX_RETRIES) {
-                        await wait(CONFIG.RETRY_DELAY_MS * (retryCount + 1));
-                        resolve(safeFetch(url, timeout, retryCount + 1));
-                    } else {
-                        reject(new Error("Timeout"));
-                    }
-                },
-                onerror: (err) => reject(err)
-            });
+                }
+            } else {
+                // GM_xmlhttpRequest Implementation for Cross-Origin
+                GM_xmlhttpRequest({
+                    method: "GET",
+                    url: url,
+                    timeout: timeout,
+                    headers: headers,
+                    onload: async (response) => {
+                        if (response.status >= 200 && response.status < 300) {
+                            try { resolve(JSON.parse(response.responseText)); }
+                            catch (e) { reject(new Error("JSON Parse Error")); }
+                        } else if ((response.status >= 500 || response.status === 429) && retryCount < CONFIG.MAX_RETRIES) {
+                            const delay = CONFIG.RETRY_DELAY_MS * (retryCount + 1);
+                            await wait(delay);
+                            resolve(safeFetch(url, timeout, retryCount + 1));
+                        } else {
+                            const err = new Error(`Status ${response.status}`);
+                            err.status = response.status;
+                            reject(err);
+                        }
+                    },
+                    ontimeout: async () => {
+                        if (retryCount < CONFIG.MAX_RETRIES) {
+                            await wait(CONFIG.RETRY_DELAY_MS * (retryCount + 1));
+                            resolve(safeFetch(url, timeout, retryCount + 1));
+                        } else {
+                            reject(new Error("Timeout"));
+                        }
+                    },
+                    onerror: (err) => reject(err)
+                });
+            }
         });
     }
 
