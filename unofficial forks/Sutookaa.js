@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         LinuxDo追觅
+// @name         LinuxDo 追觅
 // @namespace    https://linux.do/
-// @version      3.3
+// @version      3.3.1
 // @description  在网页上实时监控 Linux.do 活动。
 // @author       ChiGamma
 // @license      Fair License
@@ -41,7 +41,7 @@
         // 用户自己主题色
         "#ffd700",
         // 关注用户主题色
-        "#00d4ff", "#ff6b6b", "#4d5ef7", "#c77dff", "#00ff88", "#f87eca"
+        "#f87eca", "#4d5ef7", "#00d4ff", "#ff6b6b", "#c77dff", "#00ff88",
     ];
 
     // --- 类别定义 ---
@@ -51,7 +51,8 @@
         '非我莫属': '#a8c6fe', '读书成诗': '#e0d900', '扬帆起航': '#ff9838',
         '前沿快讯': '#BB8FCE', '网络记忆': '#F7941D', '福利羊毛': '#E45735',
         '搞七捻三': '#3AB54A', '社区孵化': '#ffbb00', '运营反馈': '#808281',
-        '深海幽域': '#45B7D1', '积分乐园': '#fcca44', '未分区':   '#9e9e9e',
+        '深海幽域': '#45B7D1', '积分乐园': '#fcca44', '虫洞广场': '#ff00f7',
+        '未分区':   '#9e9e9e',
     };
 
     const categoryMap = new Map();
@@ -60,8 +61,8 @@
         '网盘资源': [94, 95, 96, 97], "文档共建": [42, 75, 76, 77], "跳蚤市场": [10, 13, 81, 82],
         "非我莫属": [27, 72, 73, 74], "读书成诗": [32, 69, 70, 71], "扬帆起航": [46, 66, 67, 68],
         "前沿快讯": [34, 78, 79, 80], "网络记忆": [92], "福利羊毛": [36, 60, 61, 62],
-        "搞七捻三": [11, 35, 89, 21], "社区孵化": [102, 103, 104, 105], "运营反馈": [2, 15, 16, 27],
-        "深海幽域": [45, 57, 58, 59], "积分乐园": [106, 107, 108, 109],
+        "搞七捻三": [11, 35, 89, 21], "社区孵化": [102, 103, 104, 105], "运营反馈": [2, 63, 64, 65],
+        "深海幽域": [45, 57, 58, 59], "积分乐园": [106, 107, 108, 109], "虫洞广场": [110],
     };
     for (const name in category_dict) category_dict[name].forEach(id => categoryMap.set(id, name));
 
@@ -519,7 +520,7 @@
         if (box) {
             const d = document.createElement('div');
             d.className = type === 'error' ? 'log-err' : (type === 'success' ? 'log-ok' : '');
-            d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            d.textContent = `[${new Date().toLocaleTimeString(undefined, { hour12: false })}] ${msg}`;
             box.prepend(d);
             if (box.children.length > 20) box.lastChild.remove();
         }
@@ -1104,7 +1105,7 @@
             const date = new Date(item.created_at);
             const now = new Date();
             const timeStr = date.toDateString() === now.toDateString() ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : date.toLocaleString('en-US', { month: 'short', day: '2-digit' });
-            const catName = categoryMap.get(item.category_id) || "未分区";
+            const catName = categoryMap.get(item.category_id) || (item.category_id >= 110 ? "虫洞广场" : "未分区");
             const catColor = categoryColors[catName] || "#9e9e9e";
             const excerpt = cleanHtml(item.excerpt);
             const imgUrl = extractImg(item.excerpt);
