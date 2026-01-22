@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 追觅
 // @namespace    https://linux.do/
-// @version      3.3.1
+// @version      3.3.2
 // @description  在网页上实时监控 Linux.do 活动。
 // @author       ChiGamma
 // @license      Fair License
@@ -198,16 +198,16 @@
         });
     }
 
-    // --- 核心网络层 ---
+// --- 核心网络层 ---
     const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
     function safeFetch(url, timeout = 30000, retryCount = 0) {
         return new Promise(async (resolve, reject) => {
             const isSameOrigin = url.startsWith(CONFIG.HOST) || url.startsWith('/');
-            const headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.53 Safari/537.36",
-                "Accept": "application/json",
-                "Discourse-Present": "true"
+            const meta = document.querySelector('meta[name="csrf-token"]');
+            const csrfToken = meta ? meta.content : '';
+            const baseHeaders = {
+                "X-CSRF-Token": csrfToken
             };
 
             if (isSameOrigin) {
@@ -218,6 +218,8 @@
                 try {
                     const response = await fetch(url, {
                         method: 'GET',
+                        headers: baseHeaders,
+                        credentials: 'include',
                         signal: controller.signal
                     });
                     clearTimeout(id);
@@ -252,11 +254,20 @@
                 }
             } else {
                 // GM_xmlhttpRequest Implementation for Cross-Origin
+                const gmHeaders = {
+                    ...baseHeaders,
+                    "User-Agent": navigator.userAgent,
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Referer": CONFIG.HOST + "/",
+                    "Origin": CONFIG.HOST,
+                    "Cookie": document.cookie
+                };
+
                 GM_xmlhttpRequest({
                     method: "GET",
                     url: url,
                     timeout: timeout,
-                    headers: headers,
+                    headers: gmHeaders,
                     onload: async (response) => {
                         if (response.status >= 200 && response.status < 300) {
                             try { resolve(JSON.parse(response.responseText)); }
@@ -385,6 +396,7 @@
     // --- 逻辑处理 ---
     async function fetchUser(username, isInitial = false) {
         const timeout = Math.floor(getUserCycleDuration(username) / 3);
+
         try {
             const profileJson = await safeFetch(`${CONFIG.HOST}/u/${username}.json`, timeout);
             if (!profileJson || !profileJson.user) return [];
@@ -402,7 +414,20 @@
                log(`[${username}] dormant.`, 'info');
                return 'SKIPPED';
             }
+        } catch (e) {
+            if (e.status === 429) {
+                log(`[${username}] profile 429, skipping update.`, 'info');
+                State.multipliers[username] = 5;
+                const oldProfile = State.userProfiles[username];
+                if (!oldProfile) State.userProfiles[username] = { last_posted_at: '', last_seen_at: '' };
+                else State.userProfiles[username] = { last_posted_at: oldProfile.last_posted_at, last_seen_at: oldProfile.last_seen_at };
+            } else {
+                log(`[${username}]: ${e.message}`, 'error');
+                return 'ERROR';
+            }
+        }
 
+        try {
             await wait(CONFIG.THROTTLE_MS);
             const [jsonActions, jsonReactions] = await Promise.all([
                 safeFetch(`${CONFIG.HOST}/user_actions.json?offset=0&limit=${CONFIG.LOG_LIMIT_PER_USER}&username=${username}&filter=1,4,5`, timeout),
