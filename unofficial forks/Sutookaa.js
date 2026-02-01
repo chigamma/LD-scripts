@@ -198,7 +198,7 @@
         });
     }
 
-// --- 核心网络层 ---
+    // --- 核心网络层 ---
     const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
     function safeFetch(url, timeout = 30000, retryCount = 0) {
@@ -604,11 +604,12 @@
         }
 
         // 2. 系统通知
-        if (State.enableSysNotify && document.hidden) {
+        if (State.enableSysNotify && State.users.indexOf(action.username) === 0) {
             GM_notification({
-                title: `${action.username} @ Linux.do`,
+                title: `${action.username}`,
                 text: `${action.title}\n${excerpt.substring(0, 50)}`,
                 image: avatar,
+                timeout: 3000,
                 onclick: () => { window.focus(); window.open(link, '_blank'); }
             });
         }
