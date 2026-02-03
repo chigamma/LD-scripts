@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Send Invite
 // @namespace    https://linux.do/
-// @version      1.0
+// @version      1.1
 // @description  Auto-generate invites.
 // @author       ChiGamma
 // @match        https://linux.do/*
@@ -22,8 +22,12 @@
         TELEGRAM_PUBLIC_ID: '', // example: '-1001234567890'
         EXPIRY_DATE: 0,
         INVITE_LINK: '', // example: 'https://linux.do/invites/1234567890'
-        LAST_MSG_ID: '',
-        ENABLE_CDK: false
+        LAST_MSG_ID: null,
+        ENABLE_CDK: false,
+        ENABLE_LDSTORE: false,
+        LDSTORE_TOKEN: '', // Bearer Token format: 'eyJ***.eyJ***.***'
+        LDSTORE_PRODUCT_ID: '',
+        LDSTORE_LAST_ID: null
     };
 
     // --- CDK Bridge Logic (Run on cdk.linux.do) ---
@@ -83,7 +87,7 @@
         }
     };
 
-    // --- CDK Client Helper ---
+    // --- CDK Client Helper (cdk.linux.do) ---
     const CDK = {
         iframeId: 'linuxdo-invite-cdk-bridge',
         bridgeReady: false,
@@ -171,6 +175,56 @@
         }
     };
 
+    // --- LDStore Integration Helper (ldst0re.qzz.io) ---
+    const LDStore = {
+        request: (method, endpoint, data = null) => {
+            return new Promise((resolve, reject) => {
+                if (!CONFIG.LDSTORE_TOKEN) {
+                    reject('LDStore Token not configured');
+                    return;
+                }
+                GM_xmlhttpRequest({
+                    method: method,
+                    url: `https://api.ldspro.qzz.io/api/shop/products/${CONFIG.LDSTORE_PRODUCT_ID}${endpoint}`,
+                    headers: {
+                        'accept': 'application/json',
+                        'content-type': 'application/json',
+                        'authorization': `Bearer ${CONFIG.LDSTORE_TOKEN}`
+                    },
+                    timeout: 10000,
+                    data: data ? JSON.stringify(data) : null,
+                    onload: (res) => {
+                        try {
+                            const json = JSON.parse(res.responseText);
+                            resolve(json);
+                        } catch (e) {
+                            console.error('[LDStore] Parse Error:', res.responseText);
+                            reject('JSON Parse Error');
+                        }
+                    },
+                    onerror: (e) => {
+                        console.error('[LDStore] Network Error:', e);
+                        reject(e);
+                    }
+                });
+            });
+        },
+        add: async (code) => {
+            const res = await LDStore.request('POST', '/cdk', { codes: [code] });
+            if (!res.success) throw new Error(res.data?.message || res.message || 'Upload failed');
+            return res;
+        },
+        getId: async (code) => {
+            const res = await LDStore.request('GET', '/cdk?page=1');
+            if (!res.success || !res.data?.cdks) throw new Error('List failed');
+            const item = res.data.cdks.find(i => i.code === code);
+            return item ? item.id : null;
+        },
+        remove: async (id) => {
+            return LDStore.request('DELETE', `/cdk/${id}`);
+        }
+    };
+
     // --- Telegram Sender ---
     function sendTelegram(message) {
         const apiBase = `https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/`;
@@ -238,17 +292,32 @@
         const lastInvite = GM_getValue(CONFIG.INVITE_LINK, null);
         const now = Date.now();
         const enableCdk = GM_getValue(CONFIG.ENABLE_CDK, false);
+        const enableLdStore = GM_getValue(CONFIG.ENABLE_LDSTORE, false);
 
-        // Cleanup expired message
         const tgLastId = GM_getValue(CONFIG.TG_LAST_ID, null);
-        if (now >= nextRun && tgLastId) {
-            GM_xmlhttpRequest({
-                method: "POST",
-                url: `https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/deleteMessage`,
-                headers: { "Content-Type": "application/json" },
-                data: JSON.stringify({ chat_id: CONFIG.TELEGRAM_PUBLIC_ID, message_id: tgLastId }),
-                onload: () => GM_setValue(CONFIG.TG_LAST_ID, null)
-            });
+        if (now >= nextRun) {
+            // Cleanup expired telegram message
+            if (tgLastId) {
+                GM_xmlhttpRequest({
+                    method: "POST",
+                    url: `https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/deleteMessage`,
+                    headers: { "Content-Type": "application/json" },
+                    data: JSON.stringify({ chat_id: CONFIG.TELEGRAM_PUBLIC_ID, message_id: tgLastId }),
+                    onload: () => GM_setValue(CONFIG.TG_LAST_ID, null)
+                });
+            }
+
+            // Cleanup expired LDStore CDK
+            const ldLastId = GM_getValue(CONFIG.LDSTORE_LAST_ID, null);
+            if (ldLastId) {
+                console.log('[LDStore] Cleaning up expired CDK:', ldLastId);
+                LDStore.remove(ldLastId)
+                    .then(r => {
+                        console.log('[LDStore] Removed:', r);
+                        GM_setValue(CONFIG.LDSTORE_LAST_ID, null);
+                    })
+                    .catch(e => console.error('[LDStore] Remove failed:', e));
+            }
         }
 
         let inviteLink = null;
@@ -290,11 +359,14 @@
                         expiryDateObj = new Date(json.expires_at);
                         GM_setValue(CONFIG.INVITE_LINK, inviteLink);
                         GM_setValue(CONFIG.EXPIRY_DATE, expiryDateObj.getTime() + 60000);
+                        GM_setValue(CONFIG.LDSTORE_LAST_ID, null);
                     }
                 } else {
                     if (json.error_type === 'rate_limit' && json.extras) {
-                         GM_setValue(CONFIG.EXPIRY_DATE, Date.now() + (json.extras.wait_seconds * 1000));
-                         expiryDateObj = new Date(GM_getValue(CONFIG.EXPIRY_DATE));
+                         const waitMs = json.extras.wait_seconds * 1000;
+                         const expiryTime = Date.now() + waitMs;
+                         GM_setValue(CONFIG.EXPIRY_DATE, expiryTime);
+                         expiryDateObj = new Date(expiryTime);
                          UI.show(`Rate Limit: ${expiryDateObj.toLocaleString('zh-CN', {hour: '2-digit', minute:'2-digit'})}`, 'info');
                     }
                     return;
@@ -310,32 +382,57 @@
 
             let message = `邀请链接：\n<code>${inviteLink}</code>\n有效期：\n${expiryDateObj.toLocaleString('zh-CN', {weekday: 'short', hour: '2-digit', minute:'2-digit'})}`;
 
-            // 3. CDK Creation (If enabled and this is a fresh run or manual trigger)
+            const inviteCode = inviteLink.split('/').pop();
+
+            // 3. CDK Creation (Internal)
             if (enableCdk) {
-                const inviteCode = inviteLink.split('/').pop();
                 try {
-                    UI.show('Creating CDK Project...');
+                    UI.show('Creating Internal CDK Project...');
                     const startTime = new Date().toISOString();
                     const endTime = expiryDateObj.toISOString();
 
                     console.log('[SendInvite] CDK: Creating project with invite code:', inviteCode);
                     const cdkRes = await CDK.createProject(inviteCode, startTime, endTime);
-                    console.log('[SendInvite] CDK: Response received:', JSON.stringify(cdkRes));
 
-                    // Response format: { error_msg: "", data: { projectId: "..." } }
                     const projectId = cdkRes?.data?.projectId;
                     if (projectId) {
                         const cdkLink = `https://cdk.linux.do/receive/${projectId}`;
                         message += `\n\nCDK兑换链接：\n<code>${cdkLink}</code>`;
                         console.log('[SendInvite] CDK: Project created successfully, ID:', projectId);
-                        UI.show('CDK Created successfully!', 'success');
+                        UI.show('Internal CDK Created!', 'success');
                     } else {
-                        console.warn('[SendInvite] CDK: Creation response missing projectId:', cdkRes);
-                        UI.show('CDK: No project ID in response', 'error');
+                        UI.show('Internal CDK: No project ID', 'error');
                     }
                 } catch (err) {
                     console.error('[SendInvite] CDK Error:', err);
-                    UI.show('CDK Creation Error: ' + (err?.message || err), 'error');
+                    UI.show('Internal CDK Error: ' + (err?.message || err), 'error');
+                }
+            }
+
+            // 4. LDStore Integration
+            const existingLdId = GM_getValue(CONFIG.LDSTORE_LAST_ID, null);
+            if (enableLdStore && CONFIG.LDSTORE_TOKEN && !existingLdId) {
+                try {
+                    UI.show('Uploading to LDStore...');
+                    console.log('[LDStore] Uploading code:', inviteLink);
+
+                    await LDStore.add(inviteLink);
+
+                    // Delay slightly to ensure indexing if necessary, though API is usually fast
+                    await new Promise(r => setTimeout(r, 1000));
+
+                    const cdkId = await LDStore.getId(inviteLink);
+                    if (cdkId) {
+                        GM_setValue(CONFIG.LDSTORE_LAST_ID, cdkId);
+                        UI.show(`LDStore: Added ID ${cdkId}`, 'success');
+                        console.log('[LDStore] Successfully added and retrieved ID:', cdkId);
+                    } else {
+                        console.warn('[LDStore] Upload successful but ID retrieval failed.');
+                        UI.show('LDStore: ID Not Found', 'error');
+                    }
+                } catch (err) {
+                    console.error('[LDStore] Error:', err);
+                    UI.show('LDStore Error: ' + (err?.message || err), 'error');
                 }
             }
 
@@ -348,8 +445,15 @@
         GM_registerMenuCommand(`CDK生成 (当前: ${GM_getValue(CONFIG.ENABLE_CDK, false) ? '开' : '关'})`, () => {
             const current = GM_getValue(CONFIG.ENABLE_CDK, false);
             GM_setValue(CONFIG.ENABLE_CDK, !current);
-            alert(`CDK 生成已${!current ? '开启' : '关闭'}。请刷新页面生效。`);
+            alert(`内部CDK生成已${!current ? '开启' : '关闭'}。请刷新页面生效。`);
         });
+
+        GM_registerMenuCommand(`LDStore集成 (当前: ${GM_getValue(CONFIG.ENABLE_LDSTORE, false) ? '开' : '关'})`, () => {
+            const current = GM_getValue(CONFIG.ENABLE_LDSTORE, false);
+            GM_setValue(CONFIG.ENABLE_LDSTORE, !current);
+            alert(`LDStore集成已${!current ? '开启' : '关闭'}。请刷新页面生效。`);
+        });
+
         GM_registerMenuCommand("手动触发", () => getInvite());
 
         CDK.initBridge();
