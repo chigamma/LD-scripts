@@ -1,15 +1,19 @@
 // ==UserScript==
-// @name         Linux.do Send Invite
+// @name         Linux.do 更新邀请码
+// @name:en      Linux.do Send Invite
 // @namespace    https://linux.do/
 // @version      1.1
-// @description  Auto-generate invites.
+// @description  自动更新邀请码
+// @description:en Auto-generate invites.
 // @author       ChiGamma
+// @license      Fair License
 // @match        https://linux.do/*
 // @match        https://cdk.linux.do/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
+// @grant        GM_setClipboard
 // ==/UserScript==
 
 (function() {
@@ -17,39 +21,77 @@
 
     // --- Configuration ---
     const CONFIG = {
-        TELEGRAM_BOT_TOKEN: '', // example: '1234567890:ABCdef1234567890'
-        TELEGRAM_PRIVATE_ID: '', // example: '-1001234567890'
+        // >>> Telegram Configuration <<<
+        //     Target group ID (* required to enable)
         TELEGRAM_PUBLIC_ID: '', // example: '-1001234567890'
-        EXPIRY_DATE: 0,
-        INVITE_LINK: '', // example: 'https://linux.do/invites/1234567890'
-        LAST_MSG_ID: null,
-        ENABLE_CDK: false,
-        ENABLE_LDSTORE: false,
+        //     Target private group ID (optional): you can use a private group to hide the bot address
+        TELEGRAM_PRIVATE_ID: '', // example: '-1001234567890'
+        //     Bot token (* required to enable)
+        TELEGRAM_BOT_TOKEN: '', // example: '1234567890:ABCdef1234567890'
+
+        // >>> CDK Configuration <<<
+        //     CDK link (* required >0 to enable)
+        CDK_MIN_SCORE: 0, // Minimum CDK score
+
+        // >>> LDStore Configuration <<<
+        //     Login Token (* required to enable)
         LDSTORE_TOKEN: '', // Bearer Token format: 'eyJ***.eyJ***.***'
-        LDSTORE_PRODUCT_ID: '',
-        LDSTORE_LAST_ID: null
+        //     Store Product link (* required to enable)
+        LDSTORE_PRODUCT_LINK: '' // example: 'https://ldst0re.qzz.io/product/1'
+    };
+
+    // --- Log Helper ---
+    const Logger = {
+        log: (msg) => console.log(`[SendInvite] ${msg}`),
+        error: (msg, err) => console.error(`[SendInvite] ${msg}`, err || '')
+    };
+
+    // --- Services Status ---
+    const Services = {
+        TG: {
+            get enabled() { return !!CONFIG.TELEGRAM_PUBLIC_ID && !!CONFIG.TELEGRAM_BOT_TOKEN; },
+            get messageId() { return GM_getValue('TELEGRAM_LAST_ID', null); },
+            set messageId(val) { GM_setValue('TELEGRAM_LAST_ID', val); }
+        },
+        CDK: {
+            get enabled() { return CONFIG.CDK_MIN_SCORE > 0; }
+        },
+        LDS: {
+            get enabled() { return !!CONFIG.LDSTORE_PRODUCT_LINK && !!CONFIG.LDSTORE_TOKEN; },
+            get apiUrl() {
+                const match = CONFIG.LDSTORE_PRODUCT_LINK.match(/product\/(\d+)/);
+                return match ? `https://api.ldspro.qzz.io/api/shop/products/${match[1]}` : null;
+            },
+            get lastId() { return GM_getValue('LDSTORE_LAST_ID', null); },
+            set lastId(val) { GM_setValue('LDSTORE_LAST_ID', val); }
+        }
     };
 
     // --- CDK Bridge Logic (Run on cdk.linux.do) ---
     if (location.hostname === 'cdk.linux.do') {
         const ALLOWED_ORIGINS = ['https://linux.do'];
         window.addEventListener('message', async (e) => {
-            if (!ALLOWED_ORIGINS.includes(e.origin) || e.data?.type !== 'ldsp-cdk-request') {
-                return;
-            }
+            if (!ALLOWED_ORIGINS.includes(e.origin) || e.data?.type !== 'ldsp-cdk-request') return;
+
             const { requestId, url, options } = e.data;
-            console.log('[CDK Bridge] Received request:', requestId, 'Method:', options?.method, 'URL:', url);
             try {
-                const fetchOptions = { ...options, credentials: 'include' };
-                console.log('[CDK Bridge] Fetch options:', JSON.stringify(fetchOptions));
-                const res = await fetch(url, fetchOptions);
+                const res = await fetch(url, { ...options, credentials: 'include' });
                 let data;
-                try { data = await res.json(); } catch { data = { _error: '解析失败' }; }
-                console.log('[CDK Bridge] Response status:', res.status, 'Data:', JSON.stringify(data));
-                window.parent?.postMessage({ type: 'ldsp-cdk-response', requestId, status: res.status, data }, e.origin);
+                try { data = await res.json(); } catch { data = { _error: 'Parse Error' }; }
+
+                window.parent?.postMessage({
+                    type: 'ldsp-cdk-response',
+                    requestId,
+                    status: res.status,
+                    data
+                }, e.origin);
             } catch (err) {
-                console.error('[CDK Bridge] Error:', err);
-                window.parent?.postMessage({ type: 'ldsp-cdk-response', requestId, status: 0, data: { _error: '网络错误' } }, e.origin);
+                window.parent?.postMessage({
+                    type: 'ldsp-cdk-response',
+                    requestId,
+                    status: 0,
+                    data: { _error: 'Network Error' }
+                }, e.origin);
             }
         });
         return;
@@ -63,415 +105,357 @@
             if (!el) {
                 el = document.createElement('div');
                 el.id = UI.id;
-                Object.assign(el.style, {
-                    position: 'fixed', top: '20px', right: '20px',
-                    padding: '12px 18px', borderRadius: '8px',
-                    color: '#fff', fontSize: '13px', zIndex: '9999',
-                    fontFamily: 'Segoe UI, sans-serif',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-                    transition: 'opacity 0.3s',
-                    maxWidth: '300px', wordBreak: 'break-all',
-                    pointerEvents: 'none'
-                });
+                Object.assign(el.style, { position: 'fixed', top: '20px', right: '20px', padding: '12px 18px', borderRadius: '8px', color: '#fff', fontSize: '13px', zIndex: '9999', fontFamily: 'Segoe UI, sans-serif', boxShadow: '0 4px 12px rgba(0,0,0,0.3)', transition: 'opacity 0.3s', maxWidth: '300px', wordBreak: 'break-all', pointerEvents: 'none' });
                 document.body.appendChild(el);
             }
             el.style.backgroundColor = type === 'error' ? '#e74c3c' : (type === 'success' ? '#2ecc71' : '#3498db');
             el.textContent = text;
             el.style.opacity = '1';
             el.style.pointerEvents = 'auto';
-            setTimeout(() => {
-                el.style.opacity = '0';
-                el.style.pointerEvents = 'none';
-            }, 3000);
-            console.log(`[SendInvite] ${text}`);
+            setTimeout(() => { el.style.opacity = '0'; el.style.pointerEvents = 'none'; }, 3000);
+            Logger.log(`> ${text}`);
         }
     };
 
-    // --- CDK Client Helper (cdk.linux.do) ---
+    // --- CDK Integration ---
+    const CDK_HOST = 'https://cdk.linux.do';
     const CDK = {
         iframeId: 'linuxdo-invite-cdk-bridge',
         bridgeReady: false,
-        initBridge: () => {
-            if (document.getElementById(CDK.iframeId)) return Promise.resolve();
+
+        init: () => {
+            if (!Services.CDK.enabled || document.getElementById(CDK.iframeId)) return Promise.resolve();
             return new Promise((resolve) => {
                 const iframe = document.createElement('iframe');
                 iframe.id = CDK.iframeId;
-                iframe.src = 'https://cdk.linux.do/project';
+                iframe.src = `${CDK_HOST}/project`;
                 iframe.style.display = 'none';
                 iframe.onload = () => {
                     CDK.bridgeReady = true;
-                    console.log('[SendInvite] CDK Bridge initialized successfully');
+                    Logger.log('CDK Bridge initialized.');
                     resolve();
                 };
                 iframe.onerror = () => {
-                    console.error('[SendInvite] CDK Bridge failed to initialize');
+                    Logger.error('CDK Bridge failed.');
                     resolve();
                 };
                 document.body.appendChild(iframe);
             });
         },
+
         request: (url, options = {}, responseValidator = null) => {
             return new Promise(async (resolve, reject) => {
-                if (!CDK.bridgeReady) {
-                    console.log('[SendInvite] CDK: Waiting for bridge to be ready...');
-                    await new Promise(r => setTimeout(r, 1000));
-                }
-
+                if (!CDK.bridgeReady) await new Promise(r => setTimeout(r, 1000));
                 const iframe = document.getElementById(CDK.iframeId);
-                if (!iframe) return reject('Bridge not initialized');
+                if (!iframe) return reject('Bridge not found');
 
-                const requestId = Date.now().toString(36) + Math.random().toString(36).substr(2);
-                console.log('[SendInvite] CDK: Sending request', requestId, 'Method:', options.method);
+                const requestId = Date.now().toString(36) + Math.random().toString(36).substring(2);
 
                 const handler = (e) => {
                     if (e.data?.type === 'ldsp-cdk-response' && e.data.requestId === requestId) {
-                        console.log('[SendInvite] CDK: Received response for', requestId, 'Status:', e.data.status, 'Data:', JSON.stringify(e.data.data));
-
-                        if (responseValidator && !responseValidator(e.data.data)) {
-                            console.log('[SendInvite] CDK: Response does not match expected format, waiting for correct response...');
-                            return;
-                        }
-
+                        if (responseValidator && !responseValidator(e.data.data)) return;
                         window.removeEventListener('message', handler);
-                        if (e.data.status >= 200 && e.data.status < 300) resolve(e.data.data);
-                        else reject(e.data.data || `Status ${e.data.status}`);
+                        e.data.status >= 200 && e.data.status < 300 ? resolve(e.data.data) : reject(e.data.data);
                     }
                 };
+
                 window.addEventListener('message', handler);
+                setTimeout(() => { window.removeEventListener('message', handler); reject('Timeout'); }, 10000);
 
-                setTimeout(() => {
-                    window.removeEventListener('message', handler);
-                    reject('Request timeout');
-                }, 10000);
-
-                iframe.contentWindow.postMessage({ type: 'ldsp-cdk-request', requestId, url, options }, 'https://cdk.linux.do');
+                iframe.contentWindow.postMessage({ type: 'ldsp-cdk-request', requestId, url, options }, CDK_HOST);
             });
         },
-        createProject: async (inviteCode, startTimeIso, endTimeIso) => {
+
+        process: async (code, startTimeIso, endTimeIso) => {
+            if (!Services.CDK.enabled) return null;
+
             const payload = {
-                name: `邀请码-by-SendInvite-test`,
+                name: `邀请码-${new Date().toLocaleString('zh-CN', {month: '2-digit', day: '2-digit'})}`,
                 project_tags: ["邀请码"],
                 start_time: startTimeIso,
                 end_time: endTimeIso,
                 minimum_trust_level: 1,
                 allow_same_ip: false,
-                risk_level: 89,
+                risk_level: 100 - CONFIG.CDK_MIN_SCORE,
                 distribution_type: 0,
-                project_items: [inviteCode]
+                project_items: [code]
             };
 
-            const isCreateResponse = (data) => {
-                return data?.data?.projectId !== undefined;
-            };
+            const check = (data) => data?.data?.projectId !== undefined;
 
-            return CDK.request('https://cdk.linux.do/api/v1/projects', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json, text/plain, */*'
-                },
-                body: JSON.stringify(payload)
-            }, isCreateResponse);
+            try {
+                const res = await CDK.request(`${CDK_HOST}/api/v1/projects`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                }, check);
+
+                if (res?.data?.projectId) {
+                    Logger.log(`CDK Project created: ${res.data.projectId}`);
+                    return res.data.projectId;
+                }
+            } catch (e) {
+                Logger.error('CDK Creation Error:', e);
+            }
+            return null;
         }
     };
 
-    // --- LDStore Integration Helper (ldst0re.qzz.io) ---
+    // --- LDStore Integration ---
     const LDStore = {
-        request: (method, endpoint, data = null) => {
+        api: (method, endpoint, data = null) => {
             return new Promise((resolve, reject) => {
-                if (!CONFIG.LDSTORE_TOKEN) {
-                    reject('LDStore Token not configured');
-                    return;
-                }
+                const apiUrl = Services.LDS.apiUrl;
+                if (!apiUrl) return reject('Invalid product link');
+
                 GM_xmlhttpRequest({
                     method: method,
-                    url: `https://api.ldspro.qzz.io/api/shop/products/${CONFIG.LDSTORE_PRODUCT_ID}${endpoint}`,
+                    url: `${apiUrl}${endpoint}`,
+                    timeout: 5000,
                     headers: {
                         'accept': 'application/json',
                         'content-type': 'application/json',
                         'authorization': `Bearer ${CONFIG.LDSTORE_TOKEN}`
                     },
-                    timeout: 10000,
                     data: data ? JSON.stringify(data) : null,
                     onload: (res) => {
-                        try {
-                            const json = JSON.parse(res.responseText);
-                            resolve(json);
-                        } catch (e) {
-                            console.error('[LDStore] Parse Error:', res.responseText);
+                        try { resolve(JSON.parse(res.responseText)); }
+                        catch (e) {
+                            Logger.error('JSON Parse Error', e);
                             reject('JSON Parse Error');
                         }
                     },
                     onerror: (e) => {
-                        console.error('[LDStore] Network Error:', e);
-                        reject(e);
+                        Logger.error('LDStore Error', e);
+                        reject('LDStore Error');
                     }
                 });
             });
         },
-        add: async (code) => {
-            const res = await LDStore.request('POST', '/cdk', { codes: [code] });
-            if (!res.success) throw new Error(res.data?.message || res.message || 'Upload failed');
-            return res;
+
+        process: async (code) => {
+            if (!Services.LDS.enabled) return null;
+
+            // Check for existing upload
+            if (Services.LDS.lastId) return Services.LDS.lastId;
+
+            try {
+                const res = await LDStore.api('POST', '/cdk', { codes: [code] });
+
+                if (!res.success) throw new Error(res.message || 'Upload failed');
+
+                // Retrieve ID
+                await new Promise(r => setTimeout(r, 10000));
+                const listRes = await LDStore.api('GET', '/cdk?page=1');
+                const item = listRes.data?.cdks?.find(i => i.code === code);
+
+                if (item?.id) {
+                    Services.LDS.lastId = item.id;
+                    Logger.log(`LDStore Item ID: ${item.id}`);
+                    return item.id;
+                }
+            } catch (e) {
+                Logger.error('LDStore Error:', e);
+            }
+            return null;
         },
-        getId: async (code) => {
-            const res = await LDStore.request('GET', '/cdk?page=1');
-            if (!res.success || !res.data?.cdks) throw new Error('List failed');
-            const item = res.data.cdks.find(i => i.code === code);
-            return item ? item.id : null;
-        },
-        remove: async (id) => {
-            return LDStore.request('DELETE', `/cdk/${id}`);
+
+        clean: async (id) => {
+            if (!Services.LDS.enabled || !id) return;
+            try {
+                await LDStore.api('DELETE', `/cdk/${id}`);
+                Logger.log(`LDStore Cleaned ID: ${id}`);
+                Services.LDS.lastId = null;
+            } catch (e) {
+                Logger.error('LDStore Cleanup Error', e);
+            }
         }
     };
 
-    // --- Telegram Sender ---
-    function sendTelegram(message) {
-        const apiBase = `https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/`;
-        const request = (method, data) => {
-            return new Promise((resolve, reject) => {
+    // --- Telegram Integration ---
+    const Telegram = {
+        send: async (msg) => {
+            if (!Services.TG.enabled) return;
+            const api = `https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/`;
+
+            const req = (endpoint, body) => new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
-                    method: "POST",
-                    url: apiBase + method,
-                    headers: { "Content-Type": "application/json" },
-                    data: JSON.stringify(data),
-                    onload: (res) => {
-                        if (res.status >= 400) {
-                            console.error(`[SendInvite] Telegram Error (${method}):`, res.responseText);
-                            reject(res);
-                        } else {
-                            resolve(JSON.parse(res.responseText));
-                        }
-                    },
+                    method: 'POST', url: api + endpoint,
+                    headers: { 'Content-Type': 'application/json' },
+                    data: JSON.stringify(body),
+                    onload: r => r.status < 400 ? resolve(JSON.parse(r.responseText)) : reject(r.responseText),
                     onerror: reject
                 });
             });
-        };
 
-        if (CONFIG.TELEGRAM_PRIVATE_ID) {
-            // 1. Send to Private
-            request('sendMessage', {
-                chat_id: CONFIG.TELEGRAM_PRIVATE_ID,
-                text: message,
-                parse_mode: "HTML",
-                disable_web_page_preview: true
-            }).then(res => {
-                const privMsgId = res.result.message_id;
-                // 2. Forward to Public
-                return request('forwardMessage', {
-                    chat_id: CONFIG.TELEGRAM_PUBLIC_ID,
-                    from_chat_id: CONFIG.TELEGRAM_PRIVATE_ID,
-                    message_id: privMsgId
-                }).then(fwdRes => {
-                    GM_setValue(CONFIG.TG_LAST_ID, fwdRes.result.message_id);
-                    console.log('[SendInvite] Telegram sent successfully.');
-                    return request('deleteMessage', {
-                        chat_id: CONFIG.TELEGRAM_PRIVATE_ID,
-                        message_id: privMsgId
+            try {
+                let msgId;
+                if (CONFIG.TELEGRAM_PRIVATE_ID) {
+                    const priv = await req('sendMessage', {
+                        chat_id: CONFIG.TELEGRAM_PRIVATE_ID, text: msg, parse_mode: 'HTML'
                     });
-                });
-            }).catch(err => console.error('[SendInvite] Telegram send failed:', err));
+                    const fwd = await req('forwardMessage', {
+                        chat_id: CONFIG.TELEGRAM_PUBLIC_ID, from_chat_id: CONFIG.TELEGRAM_PRIVATE_ID, message_id: priv.result.message_id
+                    });
+                    await req('deleteMessage', { chat_id: CONFIG.TELEGRAM_PRIVATE_ID, message_id: priv.result.message_id });
+                    msgId = fwd.result.message_id;
+                } else {
+                    const res = await req('sendMessage', {
+                        chat_id: CONFIG.TELEGRAM_PUBLIC_ID, text: msg, parse_mode: 'HTML'
+                    });
+                    msgId = res.result.message_id;
+                }
 
-        } else {
-            // Direct Send
-            request('sendMessage', {
-                chat_id: CONFIG.TELEGRAM_PUBLIC_ID,
-                text: message,
-                parse_mode: "HTML",
-                disable_web_page_preview: true
-            }).then(res => {
-                GM_setValue(CONFIG.TG_LAST_ID, res.result.message_id);
-                console.log('[SendInvite] Telegram sent successfully.');
-            }).catch(err => console.error('[SendInvite] Telegram send failed:', err));
+                Services.TG.messageId = msgId;
+                Logger.log('Telegram message sent.');
+            } catch (e) {
+                Logger.error('Telegram Send Error', e);
+            }
+        },
+
+        clean: () => {
+            const msgId = Services.TG.messageId;
+            if (!Services.TG.enabled || !msgId) return;
+            GM_xmlhttpRequest({
+                method: "POST",
+                url: `https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/deleteMessage`,
+                headers: { "Content-Type": "application/json" },
+                data: JSON.stringify({ chat_id: CONFIG.TELEGRAM_PUBLIC_ID, message_id: msgId }),
+                onload: () => {
+                    Services.TG.messageId = null;
+                    Logger.log('Telegram message deleted.');
+                }
+            });
         }
-    }
+    };
 
-    // --- Core Logic ---
-    async function getInvite() {
-        const nextRun = GM_getValue(CONFIG.EXPIRY_DATE, 0);
-        const lastInvite = GM_getValue(CONFIG.INVITE_LINK, null);
+    // --- Main Logic ---
+    async function run() {
         const now = Date.now();
-        const enableCdk = GM_getValue(CONFIG.ENABLE_CDK, false);
-        const enableLdStore = GM_getValue(CONFIG.ENABLE_LDSTORE, false);
+        const nextRun = GM_getValue('EXPIRY_DATE', 0);
+        const lastInvite = GM_getValue('INVITE_LINK', null);
 
-        const tgLastId = GM_getValue(CONFIG.TG_LAST_ID, null);
+        // Cleanup
         if (now >= nextRun) {
-            // Cleanup expired telegram message
-            if (tgLastId) {
-                GM_xmlhttpRequest({
-                    method: "POST",
-                    url: `https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}/deleteMessage`,
-                    headers: { "Content-Type": "application/json" },
-                    data: JSON.stringify({ chat_id: CONFIG.TELEGRAM_PUBLIC_ID, message_id: tgLastId }),
-                    onload: () => GM_setValue(CONFIG.TG_LAST_ID, null)
-                });
-            }
-
-            // Cleanup expired LDStore CDK
-            const ldLastId = GM_getValue(CONFIG.LDSTORE_LAST_ID, null);
-            if (ldLastId) {
-                console.log('[LDStore] Cleaning up expired CDK:', ldLastId);
-                LDStore.remove(ldLastId)
-                    .then(r => {
-                        console.log('[LDStore] Removed:', r);
-                        GM_setValue(CONFIG.LDSTORE_LAST_ID, null);
-                    })
-                    .catch(e => console.error('[LDStore] Remove failed:', e));
-            }
+            Telegram.clean();
+            LDStore.clean(Services.LDS.lastId);
         }
 
         let inviteLink = null;
-        let expiryDateObj = null;
+        let expiry = null;
 
-        // ---------------------------------------------------------
-        // 1. DETERMINE SOURCE
-        // ---------------------------------------------------------
+        // Fetch or Cache
         if (now < nextRun && lastInvite) {
-            // -- USE CACHE --
             inviteLink = lastInvite;
-            expiryDateObj = new Date(nextRun - 60000);
+            expiry = new Date(nextRun - 60000);
         } else {
-            // -- USE API --
-            const csrfMeta = document.querySelector('meta[name="csrf-token"]');
-            if (!csrfMeta) return;
-            const requestExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+            const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
+            if (!csrf) {
+                Logger.error("CSRF Token missing");
+                return;
+            }
 
             try {
                 const formData = new URLSearchParams();
                 formData.append('max_redemptions_allowed', '1');
-                formData.append('expires_at', requestExpiry);
+                formData.append('expires_at', new Date(now + 86400000).toISOString().replace('T', ' ').substring(0, 19));
 
-                const response = await fetch('https://linux.do/invites', {
+                const res = await fetch('https://linux.do/invites', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                        'X-CSRF-Token': csrfMeta.content,
-                        'Accept': 'application/json'
-                    },
-                    credentials: 'include',
-                    body: formData
+                    headers: { 'Accept': 'application/json', 'X-CSRF-Token': csrf },
+                    body: formData,
+                    credentials: 'include'
                 });
-                const json = await response.json();
+                const json = await res.json();
 
-                if (response.ok && json.link) {
+                if (json.link) {
                     inviteLink = json.link;
-                    if (json.expires_at) {
-                        expiryDateObj = new Date(json.expires_at);
-                        GM_setValue(CONFIG.INVITE_LINK, inviteLink);
-                        GM_setValue(CONFIG.EXPIRY_DATE, expiryDateObj.getTime() + 60000);
-                        GM_setValue(CONFIG.LDSTORE_LAST_ID, null);
+                    expiry = new Date(json.expires_at);
+                    GM_setValue('INVITE_LINK', inviteLink);
+                    GM_setValue('EXPIRY_DATE', expiry.getTime() + 60000);
+                    Services.LDS.lastId = null;
+                } else if (json.error_type === 'rate_limit') {
+                    const wait = (json.extras.wait_seconds * 1000) + now;
+                    GM_setValue('EXPIRY_DATE', wait);
+                    UI.show(`Rate Limit: ${new Date(wait).toLocaleTimeString()}`, 'info');
+
+                    try {
+                        const username = JSON.parse(JSON.parse(document.getElementById('data-preloaded').dataset.preloaded).currentUser).username;
+                        const pendingRes = await fetch(`https://linux.do/u/${username}/invited.json?filter=pending&offset=0`, {
+                            headers: { 'Accept': 'application/json', 'X-CSRF-Token': csrf },
+                            credentials: 'include'
+                        });
+                        const pendingJson = await pendingRes.json();
+                        if (pendingJson.invites?.length > 0) {
+                            const pending = pendingJson.invites[0];
+                            inviteLink = pending.link;
+                            expiry = new Date(pending.expires_at);
+                            GM_setValue('INVITE_LINK', inviteLink);
+                            Logger.log(`Using pending invite: ${inviteLink}`);
+                        } else {
+                            Logger.log('No pending invites found');
+                            GM_setValue('INVITE_LINK', 'Comeback tomorrow!');
+                        }
+                    } catch (e) {
+                        Logger.error('Failed to fetch pending invites', e);
+                        GM_setValue('INVITE_LINK', 'Comeback tomorrow!');
                     }
                 } else {
-                    if (json.error_type === 'rate_limit' && json.extras) {
-                         const waitMs = json.extras.wait_seconds * 1000;
-                         const expiryTime = Date.now() + waitMs;
-                         GM_setValue(CONFIG.EXPIRY_DATE, expiryTime);
-                         expiryDateObj = new Date(expiryTime);
-                         UI.show(`Rate Limit: ${expiryDateObj.toLocaleString('zh-CN', {hour: '2-digit', minute:'2-digit'})}`, 'info');
-                    }
+                    UI.show('Failed to generate invite', 'error');
+                    Logger.error('API Error', json);
                     return;
                 }
-            } catch (e) { console.error(e); return; }
+            } catch (e) {
+                Logger.error('Fetch Error', e);
+                UI.show('Network/Fetch Error', 'error');
+                return;
+            }
         }
 
-        // ---------------------------------------------------------
-        // 2. FINALIZE: DISPLAY & SEND
-        // ---------------------------------------------------------
-        if (inviteLink && expiryDateObj) {
-            UI.show(`Invite Ready: ${inviteLink.split('/').pop()}`, 'success');
+        // Processing
+        if (inviteLink && expiry) {
+            UI.show(`Link: ${inviteLink.split('/').pop()}`, 'success');
 
-            let message = `邀请链接：\n<code>${inviteLink}</code>\n有效期：\n${expiryDateObj.toLocaleString('zh-CN', {weekday: 'short', hour: '2-digit', minute:'2-digit'})}`;
+            const dateStr = expiry.toLocaleString('zh-CN', {weekday: 'short', hour: '2-digit', minute:'2-digit'});
+            let message = `邀请链接（${dateStr}前有效）：\n<code>${inviteLink}</code>`;
 
-            const inviteCode = inviteLink.split('/').pop();
-
-            // 3. CDK Creation (Internal)
-            if (enableCdk) {
-                try {
-                    UI.show('Creating Internal CDK Project...');
-                    const startTime = new Date().toISOString();
-                    const endTime = expiryDateObj.toISOString();
-
-                    console.log('[SendInvite] CDK: Creating project with invite code:', inviteCode);
-                    const cdkRes = await CDK.createProject(inviteCode, startTime, endTime);
-
-                    const projectId = cdkRes?.data?.projectId;
-                    if (projectId) {
-                        const cdkLink = `https://cdk.linux.do/receive/${projectId}`;
-                        message += `\n\nCDK兑换链接：\n<code>${cdkLink}</code>`;
-                        console.log('[SendInvite] CDK: Project created successfully, ID:', projectId);
-                        UI.show('Internal CDK Created!', 'success');
-                    } else {
-                        UI.show('Internal CDK: No project ID', 'error');
-                    }
-                } catch (err) {
-                    console.error('[SendInvite] CDK Error:', err);
-                    UI.show('Internal CDK Error: ' + (err?.message || err), 'error');
-                }
+            // CDK
+            if (Services.CDK.enabled) {
+                const cdkId = await CDK.process(inviteLink, new Date().toISOString(), expiry.toISOString());
+                if (cdkId) message += `\n<a href="${CDK_HOST}/receive/${cdkId}">CDK</a>`;
             }
 
-            // 4. LDStore Integration
-            const existingLdId = GM_getValue(CONFIG.LDSTORE_LAST_ID, null);
-            if (enableLdStore && CONFIG.LDSTORE_TOKEN && !existingLdId) {
-                try {
-                    UI.show('Uploading to LDStore...');
-                    console.log('[LDStore] Uploading code:', inviteLink);
-
-                    await LDStore.add(inviteLink);
-
-                    // Delay slightly to ensure indexing if necessary, though API is usually fast
-                    await new Promise(r => setTimeout(r, 1000));
-
-                    const cdkId = await LDStore.getId(inviteLink);
-                    if (cdkId) {
-                        GM_setValue(CONFIG.LDSTORE_LAST_ID, cdkId);
-                        UI.show(`LDStore: Added ID ${cdkId}`, 'success');
-                        console.log('[LDStore] Successfully added and retrieved ID:', cdkId);
-                    } else {
-                        console.warn('[LDStore] Upload successful but ID retrieval failed.');
-                        UI.show('LDStore: ID Not Found', 'error');
-                    }
-                } catch (err) {
-                    console.error('[LDStore] Error:', err);
-                    UI.show('LDStore Error: ' + (err?.message || err), 'error');
-                }
+            // LDStore
+            if (Services.LDS.enabled) {
+                await LDStore.process(inviteLink);
+                if (Services.LDS.lastId) message += `\n<a href="${CONFIG.LDSTORE_PRODUCT_LINK}">LDStore</a>`;
             }
 
-            sendTelegram(message);
+            // Telegram
+            if (Services.TG.enabled) {
+                Telegram.send(message);
+            }
+
+            GM_setClipboard(inviteLink);
         }
     }
 
-    // --- Scheduler ---
+    // --- Init ---
     function init() {
-        GM_registerMenuCommand(`CDK生成 (当前: ${GM_getValue(CONFIG.ENABLE_CDK, false) ? '开' : '关'})`, () => {
-            const current = GM_getValue(CONFIG.ENABLE_CDK, false);
-            GM_setValue(CONFIG.ENABLE_CDK, !current);
-            alert(`内部CDK生成已${!current ? '开启' : '关闭'}。请刷新页面生效。`);
-        });
+        Logger.log(`Init - CDK: ${Services.CDK.enabled}, LDS: ${Services.LDS.enabled}, TG: ${Services.TG.enabled}`);
 
-        GM_registerMenuCommand(`LDStore集成 (当前: ${GM_getValue(CONFIG.ENABLE_LDSTORE, false) ? '开' : '关'})`, () => {
-            const current = GM_getValue(CONFIG.ENABLE_LDSTORE, false);
-            GM_setValue(CONFIG.ENABLE_LDSTORE, !current);
-            alert(`LDStore集成已${!current ? '开启' : '关闭'}。请刷新页面生效。`);
-        });
+        GM_registerMenuCommand("手动触发", run);
 
-        GM_registerMenuCommand("手动触发", () => getInvite());
+        if (Services.CDK.enabled) CDK.init();
 
-        CDK.initBridge();
-
-        const checkAndRun = () => {
-            const nextRun = GM_getValue(CONFIG.EXPIRY_DATE, 0);
+        const scheduler = () => {
             const now = Date.now();
-            const tgLastId = GM_getValue(CONFIG.TG_LAST_ID, null);
-
-            if (now >= nextRun) {
-                getInvite();
-            } else if (tgLastId && now >= nextRun) {
-                getInvite();
-            }
+            const next = GM_getValue('EXPIRY_DATE', 0);
+            if (now >= next) run();
         };
 
-        setTimeout(checkAndRun, 2000);
-        setInterval(checkAndRun, 60000);
+        setTimeout(scheduler, 20000);
+        setInterval(scheduler, 60000);
     }
 
     window.addEventListener('load', init);
