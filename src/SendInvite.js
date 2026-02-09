@@ -2,7 +2,7 @@
 // @name         Linux.do 更新邀请码
 // @name:en      Linux.do Send Invite
 // @namespace    https://linux.do/
-// @version      1.1
+// @version      1.2
 // @description  自动更新邀请码
 // @description:en Auto-generate invites.
 // @author       ChiGamma
@@ -60,7 +60,7 @@
             get enabled() { return !!CONFIG.LDSTORE_PRODUCT_LINK && !!CONFIG.LDSTORE_TOKEN; },
             get apiUrl() {
                 const match = CONFIG.LDSTORE_PRODUCT_LINK.match(/product\/(\d+)/);
-                return match ? `https://api.ldspro.qzz.io/api/shop/products/${match[1]}` : null;
+                return match ? `https://api2.ldspro.qzz.io/api/shop/products/${match[1]}` : null;
             },
             get lastId() { return GM_getValue('LDSTORE_LAST_ID', null); },
             set lastId(val) { GM_setValue('LDSTORE_LAST_ID', val); }
